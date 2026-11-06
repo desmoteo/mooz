@@ -639,7 +639,7 @@ model's kept outputs); stem profiles about 15 s the first time (cached); process
 
 ## 9. Tests
 
-`uv run pytest tests` (56 checks): K-weighting and loudness of a reference sine, compressor
+`uv run pytest` (61 checks): K-weighting and loudness of a reference sine, compressor
 release, exact band reconstruction, limiter ceiling, mono bass, FIR accuracy, every effect on
 synthetic signals (de-esser, resonances, transients, bass enhancer, saturator, gates, ducks),
 pan split (and that it runs outside the separation cache), chunked separation, hum, expander
@@ -651,7 +651,11 @@ filled, harmonics kept), upward dynamic EQ (thin moments only), gradual stereo w
 balance priors, snare gate (opens on hits, not on resonance swells), studio samples (tuned,
 aligned, in phase), sends (level and delay), grit (in band), vocal rider (up where dense),
 glue target, chorus send, flattened samples, nested preset tables, tempo-synced ping-pong
-delay, dual bass chain (exact when off, mono lows, driven and wider highs).
+delay, dual bass chain (exact when off, mono lows, driven and wider highs). Two more files:
+`test_pipeline.py` runs the whole chain on a 12 s synthetic song with fixture stems in place of
+the models (default and albini: finite audio, loudness target, true-peak ceiling, reports and
+stage files); `test_separation_glue.py` checks the audio-separator internals that
+`separate.py` patches, which is why that library is pinned.
 
 ## 10. Other tools considered
 

@@ -1,6 +1,7 @@
 # Plan: a simpler rehearsal-master
 
-Status, 5 November 2026: this is a plan. Nothing in it is implemented; the code and
+Status, 6 November 2026: step 1 (safety net) is done, apart from two deletions that wait
+for a yes. Nothing that changes the sound is implemented: the audio code and
 `rehearsal.toml` are as they were. It replaces no other document: [DESIGN.md](DESIGN.md)
 still describes the pipeline as it runs today.
 
@@ -172,8 +173,8 @@ All are still present.
 | song style overrides per-song `[files]` settings (documented the other way round) | [pipeline.py:421](../rehearsal_master/pipeline.py#L421) | step 4 (decision 4: styles removed) |
 | per-song `[files."X".tracks.<track>]` does not reach the tracks based on it (`guitar_left` / `guitar_right`) | [config.py:92](../rehearsal_master/config.py#L92) | step 3 |
 | presets write different content to the same files in the shared stems cache (`_vocals_recombined.wav`, `_proc_*.wav`, `_buzz/`) | [pipeline.py:401](../rehearsal_master/pipeline.py#L401), [pipeline.py:265](../rehearsal_master/pipeline.py#L265) | step 3; `_buzz/` goes in step 4 |
-| `librosa` imported but not declared as a dependency | [augment.py:409](../rehearsal_master/augment.py#L409), [note_eq.py:133](../rehearsal_master/note_eq.py#L133) | step 1 |
-| plain `uv run pytest` collects `experiments/` and fails | [pyproject.toml](../pyproject.toml) | step 1 |
+| `librosa` imported but not declared as a dependency | [augment.py:409](../rehearsal_master/augment.py#L409), [note_eq.py:133](../rehearsal_master/note_eq.py#L133) | done (step 1) |
+| plain `uv run pytest` collects `experiments/` and fails | [pyproject.toml](../pyproject.toml) | done (step 1) |
 | the docs gave wrong test counts (36 and 49 for 56) | README, DESIGN | done on 5 November 2026 |
 | latent: if the loudness loop has not settled after 5 rounds, the reported gain is not the one applied | [pipeline.py:29](../rehearsal_master/pipeline.py#L29) | step 3 |
 | latent: a kit piece the balance marks as dropped is not removed from the drum bus (cannot happen with today's groups) | [pipeline.py:127](../rehearsal_master/pipeline.py#L127) | step 3 |
@@ -188,9 +189,9 @@ All are still present.
 | mix decisions are not validated: only the separation has a benchmark; the rest is a 923-line settings file tuned by ear on five songs | | step 5 |
 | too many overlapping stages | the bass alone runs ten processors plus EQ and a duck | decision 5, steps 4 and 5 |
 | slow iteration: any tweak re-runs about 4 minutes per song; stage files are written but never reused | | step 9 |
-| no end-to-end test; `process_file` and `_tracks` hold 365 lines of orchestration, file handling and caching | all 56 tests exercise single functions on synthetic signals | step 1 (test), step 9 (split) |
-| not a git repository; the code sits inside 170 GB of data, about 34 GB of it experiment virtualenvs, on a disk 81 % full | | step 1 |
-| fragile separation glue: it patches audio-separator internals and the global `torch.load`, and the dependency is only bounded from below (`>=0.47`) | [separate.py:398-410](../rehearsal_master/separate.py#L398-L410) | step 1 |
+| no end-to-end test; `process_file` and `_tracks` hold 365 lines of orchestration, file handling and caching | the 56 tests before step 1 exercised single functions on synthetic signals | test: done (step 1); split: step 9 |
+| not a git repository; the code sits inside 170 GB of data, about 34 GB of it experiment virtualenvs, on a disk 81 % full | | git: done (step 1); disk: waiting for a yes |
+| fragile separation glue: it patches audio-separator internals and the global `torch.load`, and the dependency is only bounded from below (`>=0.47`) | [separate.py:398-410](../rehearsal_master/separate.py#L398-L410) | done (step 1): pinned, with a test |
 | batch handling: one failing file aborts the batch; `rehearsal.toml` and `--learn-balance` read from the current folder while outputs go next to the input | [cli.py:258](../rehearsal_master/cli.py#L258), [cli.py:266](../rehearsal_master/cli.py#L266) | step 3, step 6 |
 
 ### The review's seven points
@@ -212,22 +213,26 @@ New with the aims: step 2 (listening with settings only) and step 8 (album repor
 Each step ends with the docs updated: README tuning table, DESIGN, `defaults.toml`
 comments.
 
-1. **Safety net.**
-   - `git init`, with a `.gitignore` for audio, `processed/`, `prove/`, virtualenvs and
-     model caches.
-   - `testpaths = ["tests"]`; declare `librosa`.
-   - One end-to-end test: `process_file` on a short synthetic song with fixture stems, for
-     default and albini, checking finite output, the loudness target and the true-peak
-     ceiling.
-   - Separation glue: pin audio-separator to the locked version (0.47.0) and add a test
-     that the internals it patches still exist, so an upgrade fails in the tests and not
-     in the middle of a separation.
-   - Disk: the four experiment virtualenvs (about 34 GB) cannot be recreated from their
-     `env.sh` files, which only set variables. Record each one's package list next to its
-     scripts, then delete them. Remove the stray `processed/processed/`.
+1. **Safety net.** Done on 6 November 2026, except the deletions.
+   - Done: a git repository with two commits (the project as it stood, then this step);
+     `.gitignore` for audio, `processed/`, virtualenvs, model caches and the third-party
+     checkouts under `experiments/`.
+   - Done: `testpaths = ["tests"]`; `librosa` declared.
+   - Done: [tests/test_pipeline.py](../tests/test_pipeline.py) runs `process_file` on a
+     12 s synthetic song with fixture stems, for default and albini: finite output, the
+     loudness target within 0.1 LU, the true-peak ceiling, the reports and stage files.
+   - Done: audio-separator pinned to 0.47.0, and
+     [tests/test_separation_glue.py](../tests/test_separation_glue.py) checks the
+     internals `separate.py` patches.
+   - Done: each experiment virtualenv's package list is recorded next to its scripts
+     (`experiments/*/requirements-*.txt`, with the third-party checkouts and their commits).
+   - **Waiting for a yes:** deleting the four experiment virtualenvs (about 34 GB) and the
+     stray `processed/processed/` (170 MB). The model caches under `experiments/`
+     (`prompt_sep/hf_cache` 60 GB, `bass_sr/hf_home` 6 GB) can be downloaded again and are
+     the larger saving.
 
-   *Done when:* plain `uv run pytest` passes, the first commit exists and the disk space
-   is back.
+   *Done when:* plain `uv run pytest` passes (it does: 61 checks, about a minute), the
+   first commit exists (it does) and the disk space is back (not yet).
 2. **Listen to the aims with settings only** (no code): the block under
    [Trying it today](#trying-it-today-with-settings-only), all five songs, A/B against the
    current masters.

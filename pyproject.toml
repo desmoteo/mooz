@@ -8,6 +8,7 @@ dependencies = [
     "scipy>=1.11",
     "soundfile>=0.12",
     "matplotlib>=3.8",
+    "librosa>=0.10",       # pitch tracking and note onsets of the bass (augment.py, note_eq.py)
 ]
 
 [project.scripts]
@@ -25,13 +26,18 @@ dev = ["pytest>=8"]
 # Stem separation (PyTorch + Demucs, ~3 GB). Installed by default; skip it with
 # `uv sync --no-group stems` and the pipeline falls back to whole-mix processing.
 stems = [
-    "audio-separator[cpu]>=0.47",
+    # pinned: separate.py patches its internals to load models it does not list (see
+    # tests/test_separation_glue.py before raising this)
+    "audio-separator[cpu]==0.47.0",
     "audioread>=3.1.0",
     "demucs>=4.0.1",
     "torch>=2.7",
 ]
 # Hosts VST3 plugins (Chowdhury DSP's tape model, [saturation] engine = "chowtape").
 plugins = ["pedalboard>=0.9"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]      # experiments/ has scripts named *_test.py that are not tests
 
 [tool.uv]
 default-groups = ["dev", "stems", "plugins"]

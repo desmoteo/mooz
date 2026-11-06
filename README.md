@@ -190,6 +190,6 @@ Background reading, with how this pipeline compares: [docs/RESEARCH.md](docs/RES
 ## Development
 
 ```sh
-uv run pytest tests    # 56 DSP and pipeline checks (plain `uv run pytest` also collects experiments/ and fails)
+uv run pytest          # 61 checks, about a minute: DSP, the pipeline end to end, the separation library's internals
 uv run --with remotezip --with requests python tools/build_raw_references.py   # rebuild the raw-track references
 ```
