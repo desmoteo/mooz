@@ -1,0 +1,47 @@
+# Settings for the recordings in this folder. List only what you want to change;
+# every option, with an explanation, is in rehearsal_master/defaults.toml.
+# Order of precedence: defaults < this file < --preset < the song's style < [files."..."].
+
+[loudness]
+target_lufs = -14.0          # where streaming and phones play (-16 kept more punch, -12 is "radio loud")
+
+[stems]
+residual_gain_db = -3.0      # what the separation missed (room, bleed), added back 3 dB down: a drier, cleaner mix
+
+[tracks.guitar]
+width = 0.8                  # wider guitars (default 0.6: the masters were nearly mono, L/R correlation 0.94)
+balance = 0.6                # less re-centring of the two amps (default 0.8)
+
+[output]
+mp3 = true
+# artist = "Circhi"
+# stages = "off"             # don't write the stage files (saves ~0.5 GB per song)
+
+# Levels in every song (dB on top of the learnt targets; see --learn-balance):
+# [balance]
+# offsets = { vocals = 1.5, guitars = 0.0, bass = 0.0, drums = 0.0 }
+#
+# [drum_bus.balance]
+# offsets = { kick = 1.0, snare = 0.0, toms = 0.0, cymbals = -1.0 }
+
+# Per-instrument chains. Only list what you change, e.g.:
+#
+# [tracks.kick]
+# kick_shaper = { punch_db = 5.0 }
+#
+# [stems.pan_split]          # the two guitars as two stems (split by where their amps stood)
+# enabled = true
+#
+# [tracks.guitar_left]
+# pan = -0.2
+
+# Per song: the key is matched against the file name (case-insensitive).
+#
+# [files."Miramare".trim]
+# start_s = 5.0              # manual cut points in seconds of the original file
+# end_s = 242.0
+#
+# [files."Vita".character]
+# adapt = false              # don't adapt the mix to this song's style
+#
+# (lists such as eq = [...] replace the whole list, so copy all its bands from the defaults file)

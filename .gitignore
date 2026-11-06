@@ -1,0 +1,23 @@
+# Recordings and everything made from them
+*.wav
+*.WAV
+*.flac
+*.mp3
+*.aif
+*.aiff
+/processed/
+
+# Environments and caches
+.venv/
+.venv-*/
+__pycache__/
+.pytest_cache/
+
+# Experiments: model caches, third-party checkouts, copied inputs
+# (the checkouts and their commits are listed in each folder's requirements-*.txt)
+/experiments/*/hf_cache/
+/experiments/*/hf_home/
+/experiments/prompt_sep/Hive/
+/experiments/prompt_sep/sam-audio/
+/experiments/prompt_sep/inputs/
+/experiments/bass_sr/src/

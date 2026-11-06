@@ -1,0 +1,118 @@
+# Interpol-like post-punk (the "Turn On the Bright Lights" sound): dark, cold and spacious.
+#
+# The bass is a lead instrument: loud, picked, mid-forward, its upper part driven and
+# chorused by a dual (split-band) chain while the low end stays clean and mono. Two
+# interlocking, trebly guitars, panned apart, through chorus and dotted-eighth delays. A
+# baritone vocal that sits inside the band in a long plate, with slapback and a quarter-note
+# echo, not on top of it. Tight, driving drums with reverb on the snare. A darker overall tone.
+# Written to processed/interpol/:  uv run rehearsal-master --preset interpol
+
+[output]
+dir = "processed/interpol"
+
+[loudness]
+target_lufs = -14.0
+
+[stems.pan_split]          # the two guitars as two stems, to place them apart
+enabled = true
+
+[eq]
+tilt_db_per_oct = -2.4     # darker, colder than the default
+
+[stereo]
+width = 1.1
+
+[saturation]               # clean tape: weight, no grit
+chowtape = { drive = 0.45, saturation = 0.45, bias = 0.8 }
+
+[glue]
+target_gr_db = 1.4
+
+[balance]                  # the bass up with the guitars, the voice inside the band
+prior_weight = 0.15
+offsets = { vocals = -1.5, guitars = 0.5, bass = 2.5, drums = -0.5 }
+
+[rider]                    # keep the words, gently
+strength = 0.5
+max_up_db = 2.5
+
+# the song styles set their own glue targets, which would win over the one above
+[character.styles.wall]
+glue = { target_gr_db = 1.8 }
+
+[character.styles.steady]
+glue = { target_gr_db = 1.4 }
+
+[character.styles.dynamic]
+glue = { target_gr_db = 1.2 }
+
+[character.styles.build]
+glue = { target_gr_db = 1.0 }
+
+[character.styles.ballad]
+glue = { target_gr_db = 0.8 }
+
+[drum_bus]                 # a kit in a room, driving
+room = { level_lu = -14.0, rt60_s = 0.8 }
+
+[tracks.vocals]            # baritone: keep the chest, then distance and space
+eq = [
+  { type = "high_pass", freq_hz = 70.0, q = 0.7 },
+  { type = "peak", freq_hz = 150.0, gain_db = 1.5, q = 0.8 },   # the baritone's weight
+  { type = "peak", freq_hz = 400.0, gain_db = -2.0, q = 1.0 },
+  { type = "peak", freq_hz = 3000.0, gain_db = 2.0, q = 0.8 },
+  { type = "high_shelf", freq_hz = 9000.0, gain_db = -1.0, q = 0.7 },  # not glossy
+]
+sends = [
+  { type = "plate", level_lu = -14.0, rt60_s = 1.8, predelay_ms = 30.0, damping = 0.5, hp_hz = 250.0, lp_hz = 6500.0 },
+  { type = "slap", level_lu = -18.0, delay_ms = 110.0, spread_ms = 15.0, hp_hz = 300.0, lp_hz = 4500.0 },
+  { type = "delay", level_lu = -22.0, delay_beats = 1.0, delay_ms = 600.0, feedback = 0.3, repeats = 3, ping_pong = true, hp_hz = 300.0, lp_hz = 4000.0 },
+]
+
+[tracks.bass]              # a lead bass: picked, mid-forward, chorused above 250 Hz, clean and mono below
+width = 1.0                # (the chorus is stereo; the mix keeps everything under 50 Hz mono)
+balance = 0.0
+eq = [
+  { type = "high_pass", freq_hz = 35.0, q = 0.7 },
+  { type = "low_shelf", freq_hz = 100.0, gain_db = 1.0, q = 0.7 },
+  { type = "peak", freq_hz = 350.0, gain_db = -2.0, q = 0.7 },
+  { type = "peak", freq_hz = 800.0, gain_db = 2.0, q = 1.0 },   # the note
+  { type = "peak", freq_hz = 1600.0, gain_db = 2.5, q = 1.0 },  # the pick
+  { type = "low_pass", freq_hz = 7000.0, q = 0.7 },
+]
+exciter = { enabled = false }   # the dual chain's drive gives the growl
+dual = { enabled = true, crossover_hz = 250.0, drive_db = 12.0, drive_mix = 0.45, chorus_mix = 0.45, chorus_depth_ms = 1.8, chorus_rate_hz = 0.6, high_gain_db = 1.5 }
+
+[tracks.guitar]            # (also both split guitars) trebly and clean-ish: room for the bass below
+eq = [
+  { type = "high_pass", freq_hz = 120.0, q = 0.7 },
+  { type = "peak", freq_hz = 300.0, gain_db = -2.0, q = 1.0 },
+  { type = "peak", freq_hz = 3000.0, gain_db = 2.0, q = 1.0 },  # jangle / presence
+  { type = "high_shelf", freq_hz = 9000.0, gain_db = -1.0, q = 0.7 },
+]
+saturator = { enabled = true, drive_db = 4.0, even = 0.6, mix = 0.2 }
+width = 1.0                # if the two guitars could not be split: keep the stem's spread
+sends = [
+  { type = "chorus", level_lu = -14.0, delay_ms = 10.0, depth_ms = 2.0, rate_hz = 0.5, hp_hz = 200.0, lp_hz = 9000.0 },
+  { type = "delay", level_lu = -16.0, delay_beats = 0.75, delay_ms = 450.0, feedback = 0.4, repeats = 5, ping_pong = true, hp_hz = 250.0, lp_hz = 5000.0 },
+  { type = "plate", level_lu = -19.0, rt60_s = 1.5, predelay_ms = 20.0, damping = 0.5, hp_hz = 300.0, lp_hz = 7000.0 },
+]
+
+[tracks.guitar_left]       # interlocking: one each side, not hard
+width = 0.4
+pan = -0.6
+
+[tracks.guitar_right]
+width = 0.4
+pan = 0.6
+
+[tracks.kick]              # tight and driving
+augment = { library = { mix = 0.3 } }
+transient = { attack = [0.0, 1.0], sustain = [-0.2, -0.4] }
+
+[tracks.snare]             # a cracking snare with its own reverb, post-punk
+augment = { library = { mix = 0.3 } }
+transient = { attack = [0.3, 1.0, 0.4], sustain = [-0.4, -0.4, -0.3] }
+sends = [
+  { type = "plate", level_lu = -16.0, rt60_s = 1.3, predelay_ms = 10.0, damping = 0.5, hp_hz = 300.0, lp_hz = 8000.0 },
+]

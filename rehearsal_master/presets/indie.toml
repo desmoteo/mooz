@@ -1,0 +1,91 @@
+# Gritty, organic indie / garage rock: character and energy over polish, the band in a room.
+#
+# Instead of surgical clean-up and transparency: the kit's bleed and room left in and crushed
+# under it, tape echo on the voice instead of a clean plate, a distorted copy of the bass
+# grinding through the guitars, guitar mids left forward with tape (not EQ) taking the
+# harsh top off, the mix on hot tape into a bus compressor that breathes with the kick. The
+# rehearsal room's real defects are still fixed (hum, snare buzz, level consistency).
+# Written to processed/indie/:  uv run rehearsal-master --preset indie
+
+[output]
+dir = "processed/indie"
+
+[loudness]
+target_lufs = -14.0
+
+[multiband]
+enabled = false            # the colour and glue come from tape and the bus compressor
+
+[saturation]               # the master on tape, hit hot, under-biased a little: rounded transients, low-mid bump
+engine = "chowtape"
+chowtape = { input_gain_db = 4.0, drive = 0.65, saturation = 0.65, bias = 0.45 }
+
+[glue]                     # a bus compressor that breathes, pumping a little with the kick
+target_gr_db = 2.0
+ratio = 2.5
+attack_ms = 20.0
+release_ms = 120.0
+
+[balance]
+prior_weight = 0.15        # mostly the band's own balance: the instruments fight a little for space
+
+[drum_bus]                 # a crushed, trashy room under the kit (1176-style: fast, hard, driven)
+room = { level_lu = -10.0, rt60_s = 0.9 }
+parallel = { enabled = true, mix = 0.45, threshold_pct = 30.0, ratio = 12.0, attack_ms = 1.0, release_ms = 60.0, drive_db = 8.0 }
+
+# the song styles would otherwise turn the crush and glue back down
+[character.styles.wall]
+glue = { target_gr_db = 2.5 }
+drum_bus = { parallel = { mix = 0.55 } }
+
+[character.styles.dynamic]
+glue = { target_gr_db = 1.6 }
+drum_bus = { parallel = { mix = 0.4 } }
+
+[character.styles.ballad]
+glue = { target_gr_db = 1.0 }
+drum_bus = { parallel = { mix = 0.25 } }
+
+[character.styles.build]
+glue = { target_gr_db = 1.5 }
+
+[character.styles.steady]
+glue = { target_gr_db = 2.0 }
+
+[tracks.vocals]            # tape echo instead of a clean plate: up front, with a wobbly, slightly unhinged space
+sends = [
+  { type = "tape_echo", level_lu = -15.0, delay_ms = 140.0, feedback = 0.35, repeats = 4, drive_db = 8.0, wow_ms = 0.8, wow_hz = 0.6, hp_hz = 300.0, lp_hz = 3500.0 },
+]
+
+[tracks.bass]              # teeth: a distorted copy of the mids grinding under the clean bass
+grit = { enabled = true, drive_db = 20.0, band_hz = [800.0, 2000.0], level_db = -8.0 }
+
+[tracks.guitar]            # mids forward: no mud / fizz carving; tape at 7.5 ips rolls the harsh top off
+eq = [
+  { type = "high_pass", freq_hz = 80.0, q = 0.7 },
+  { type = "peak", freq_hz = 170.0, gain_db = 2.0, q = 0.8 },
+]
+dynamic_eq = []
+ducks = [
+  { source = "kick", fmin_hz = 0.0, fmax_hz = 150.0, depth_db = 2.0, release_ms = 150.0 },
+  { source = "snare", fmin_hz = 2000.0, fmax_hz = 6000.0, depth_db = 2.0, release_ms = 80.0, purpose = "cleanup" },
+  { source = "vocals", fmin_hz = 1500.0, fmax_hz = 4000.0, depth_db = 1.0, release_ms = 200.0 },
+]
+saturator = { enabled = true, engine = "chowtape", chowtape = { input_gain_db = 3.0, drive = 0.6, saturation = 0.6, bias = 0.5, speed_ips = 7.5 } }
+
+[tracks.kick]              # the drummer's own samples only: no studio polish
+augment = { library = { enabled = false } }
+
+[tracks.snare]             # the bleed glues the kit: barely gated (the buzz fix stays)
+gate = { depth_db = 3.0, buzz_extra_db = 8.0 }
+augment = { library = { enabled = false } }
+
+[tracks.toms]
+gate = { depth_db = 4.0 }
+augment = { library = { enabled = false } }
+
+[tracks.hihat]
+kit_gate = { depth_db = 6.0 }
+
+[tracks.cymbals]
+kit_gate = { depth_db = 6.0 }

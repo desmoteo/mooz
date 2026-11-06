@@ -1,0 +1,71 @@
+# Settings for the recordings in this folder. List only what you want to change;
+# every option, with an explanation, is in rehearsal_master/defaults.toml.
+# Order of precedence: defaults < this file < --preset < the song's style < [files."..."].
+
+[loudness]
+target_lufs = -14.0          # where streaming and phones play (-16 kept more punch, -12 is "radio loud")
+
+[stems]
+residual_gain_db = -3.0      # what the separation missed (room, bleed), added back 3 dB down: a drier, cleaner mix
+
+[tracks.guitar]
+width = 0.8                  # wider guitars (default 0.6: the masters were nearly mono, L/R correlation 0.94)
+balance = 0.6                # less re-centring of the two amps (default 0.8)
+
+# Levels in every song (dB on top of the learnt targets; see --learn-balance):
+# [balance]
+# offsets = { vocals = 1.5, guitars = 0.0, bass = 0.0, drums = 0.0 }
+#
+# [drum_bus.balance]
+# offsets = { kick = 1.0, snare = 0.0, toms = 0.0, cymbals = -1.0 }
+
+# Per-instrument chains. Only list what you change, e.g.:
+#
+# [tracks.kick]
+# kick_shaper = { punch_db = 5.0 }
+#
+# [stems.pan_split]          # the two guitars as two stems (split by where their amps stood)
+# enabled = true
+#
+# [tracks.guitar_left]
+# pan = -0.2
+
+# Per song: the key is matched against the file name (case-insensitive).
+#
+# [files."Miramare".trim]
+# start_s = 5.0              # manual cut points in seconds of the original file
+# end_s = 242.0
+#
+# [files."Vita".character]
+# adapt = false              # don't adapt the mix to this song's style
+#
+# (lists such as eq = [...] replace the whole list, so copy all its bands from the defaults file)
+
+# --- experiments/bass_note_eq: round 2 of the bass fixes (fixes.py 9h_punch_fundamental), into a test folder ---
+[output]
+dir = "processed/experiments/bass_note_eq/mix2"
+mp3 = true
+
+[tracks.bass]
+# the clean-up note by note (note_eq.py), its checked pitch for the fundamental, and once more after the chain
+note_eq = { enabled = true, fundamental_pitch = "checked", after_chain = true, after_chain_keep_above_hz = 1000.0 }  # after the chain: below 1 kHz only
+# 1. lows: each note's fundamental restored to 1.5 dB under its 2nd harmonic (was 3); 2. punch: 3 dB more at its start
+bass_fundamental = { enabled = true, boost_db = 2.0, restore = true, restore_db = -1.5, attack_db = 5.0 }  # punch: 5 dB, 10 ms rise
+# 4. no tone-match boost above 900 Hz (it lifted the separation's clank band by 2 dB)
+tone_match = { enabled = true, strength = 0.7, max_boost_db = 1.5, max_cut_db = 5.0, fmin_hz = 35.0, fmax_hz = 900.0, reference = 0.5 }
+eq = [
+  { type = "high_pass", freq_hz = 32.0, q = 0.7 },
+  { type = "low_shelf", freq_hz = 100.0, gain_db = 0.5, q = 0.7 },  # boom: +1.5 -> +0.5
+  { type = "peak", freq_hz = 200.0, gain_db = 1.5, q = 1.2 },   # 3. warmth: 5 dB under a studio bass here
+  { type = "peak", freq_hz = 315.0, gain_db = -2.0, q = 1.2 },  # 3. box: still 3 dB over a studio bass
+  { type = "peak", freq_hz = 350.0, gain_db = -2.0, q = 0.7 },
+  { type = "peak", freq_hz = 800.0, gain_db = 1.0, q = 1.0 },
+  { type = "peak", freq_hz = 1600.0, gain_db = -3.0, q = 1.5 }, # 4. the separation's metallic bump
+  { type = "peak", freq_hz = 2500.0, gain_db = 0.5, q = 0.9 },
+  { type = "low_pass", freq_hz = 6000.0, q = 0.7 },
+]
+resonance = { enabled = true, fmin_hz = 40.0, fmax_hz = 400.0, threshold_db = 4.0, strength = 0.6, depth_db = 6.0, smooth_oct = 0.5, release_ms = 120.0, average_ms = 1000.0 }  # the room's box, not each note's harmonics
+transient = { enabled = true, crossovers_hz = [500.0], attack = [0.8, 0.15], sustain = [-0.8, 0.0], max_db = 6.0 }  # punch: start up, ring down
+exciter = { enabled = true, freq_hz = 500.0, amount_db = -13.0, drive = 3.0, even = 0.8 }  # brighter: on the cleaned notes
+# 2. less of the bass ducked under the kick (was 3.5 dB): the notes keep their start
+ducks = [{ source = "kick", fmin_hz = 0.0, fmax_hz = 120.0, depth_db = 2.0, release_ms = 150.0 }]

@@ -1,0 +1,42 @@
+{
+ "bs_roformer/bs_mega_53stem_full_mvsep": {
+  "sha256": "c62820893bbf86d4e734f966bd142d9157cfc8bb8e79e9d8f9ea553f3ff3519f",
+  "config_sha256": "7e198062a251587088adb91215a4f44ab59e67bd62fcc805cf54d6e7dfc51103"
+ },
+ "mel_band_roformer/mbr_lead_rhythm_guitar_listra92": {
+  "sha256": "b3c47bca33609ca1ba0bb2d2076410bfd1eb941b051b72afc1f3e24d12b17eef",
+  "config_sha256": "a26685bc9ab10aab4dc153b74ec3559f1b4bd2251d129a13b6b22fe3a27d382d"
+ },
+ "mel_band_roformer/mbr_percussion_yolkispaliks": {
+  "sha256": "8fede38c911b7fa87c05186111dcad788895439cbaa1eead656768163e13a49d",
+  "config_sha256": "1f96a6e6f50c7128311af963ccd304bb074b1a32f3f1a1fb835f9198c9a74677"
+ },
+ "bs_roformer/bs_drums_xlancer": {
+  "sha256": "70c01700b7b8ea82555d170d6c3e3e3a1c370b3dedd449e987f5ad5041731171",
+  "config_sha256": "ab211a29f70bb992ca030381c085c4da9bc85053d6b328182300a773f7332cbb"
+ },
+ "bs_roformer/bs_drums2_xlancer": {
+  "sha256": "7d53b4d663212d748b1450ca9c9d97a13f8b95eeee1ac39cf986bc916f227314",
+  "config_sha256": "ab211a29f70bb992ca030381c085c4da9bc85053d6b328182300a773f7332cbb"
+ },
+ "bs_roformer/bs_drums_gilliaaan": {
+  "sha256": "f60c4370257257301922dec9c6528cfab1b82b02d772ae0a0090cb566d4c4ca7",
+  "config_sha256": "c0bbf1861c2fe6e00ddbae66babd2534923a79e6e8670b59df961363f1ef964b"
+ },
+ "bs_roformer/bs_bass_xlancer": {
+  "sha256": "c409465e3dccfd83fa34e6a807dbdae2f4f1db24f2f85a0fdc146b6fa828afff",
+  "config_sha256": "dd9164936be88e636ccae0b6689e5b2f299f2cd9668918071e0795cd8cdd7e00"
+ },
+ "bs_roformer/bs_vocals_large1_unwa": {
+  "sha256": "3d1334565bb9e4c08f4b3891d5ac39e269b511baf66024a3fd8a10112d52b945",
+  "config_sha256": "4c6842acf3391415b7f2612b0088e9b22431056b250f4c45442d8103d1cdf457"
+ },
+ "bs_roformer/bs_voc_hyperace2_unwa": {
+  "sha256": "54cf516f621f2f460bf660ed137e244b8931bf7a2ce85ddceecff816dbc4d668",
+  "config_sha256": "af5331e883722aaefbf3356bc2b4c813b3f4ffe67dad487604ae3fc5f2a2ff40"
+ },
+ "bs_roformer/bs_bass_beatloo_labs": {
+  "sha256": "57ab7828b32040b9c55ba03ac516e9d7a976c292247ffce2d8fb66fb7a68f993",
+  "config_sha256": "efd2caaef1bd567eb586808b25a74c0d28e76d65446f35d4b7892a8e3dbff686"
+ }
+}

@@ -1,0 +1,923 @@
+# Default settings for rehearsal-master.
+#
+# Chain: trim -> high-pass -> [separate into stems -> per-track chain -> sum] ->
+#        stereo -> tonal EQ -> multiband -> glue -> loudness/clipper/limiter
+#
+# Override any of these in your own rehearsal.toml using the same structure; keys you
+# leave out keep the values below. Lists (e.g. multiband.bands, eq.manual) are replaced
+# as a whole. Per-song overrides go in [files."<part of the file name>"] sections,
+# for example:
+#
+#   [files."Miramare".trim]
+#   start_s = 5.0          # manual cut points, in seconds of the original file
+#   end_s = 242.0
+#
+#   [files."Vita".eq]
+#   strength = 0.5
+
+[trim]
+enabled = true
+start_s = -1.0             # manual cut points in seconds of the original file; -1 = automatic
+end_s = -1.0
+threshold_rel_db = -30.0   # "silence" = this many dB below the song's loudness
+min_active_s = 1.0         # sounds shorter than this around the song (button clicks) are ignored
+pre_roll_s = 2.0           # keep this much before the first sound (a calm lead-in, not an abrupt start)...
+post_roll_s = 0.5          # ...and after the last one
+fade_in_s = 1.5            # fades in over the lead-in: hides record-button clicks and room noise
+fade_out_s = 1.0
+
+[highpass]
+enabled = true
+freq_hz = 30.0             # rumble only: a bass guitar's low E is 41 Hz
+order = 4
+
+[hum]                      # mains hum (50 Hz and harmonics) from amps, removed before separation
+enabled = true
+base_hz = [50.0, 60.0]     # candidates; the one actually present is detected and refined
+max_harmonic = 12
+min_db = 10.0              # only harmonics this far above their surroundings in the quietest moments
+bandwidth_hz = 1.0         # very narrow notches: notes next to them are untouched
+
+[stems]                    # source separation (PyTorch etc., installed by default)
+enabled = true             # off, or not installed: the [tracks.mix] chain runs on the whole mix
+backend = "roformer"       # "roformer": a plan of [stems.plans] below; "demucs": Demucs 4 stems
+plan = "ensemble"          # "ensemble": every model on the whole recording, stems averaged over several models
+                           # (the layout of MVSep's "Ensemble All-In"); "cascade": the earlier chain, vocals first,
+                           # the instruments from what is left. Each plan keeps its own stem cache
+                           # (<stems_dir> for cascade, <stems_dir>_<plan> for the others): switching back and forth
+                           # needs no new separation once both ran
+keep_models = true         # keep every model's own outputs in <cache>/models/ (24-bit FLAC, 12 dB down) for listening
+device = "auto"            # auto, cuda or cpu
+cache = true               # keep stems in <output dir>/stems/<song>/ and reuse them
+residual_gain_db = 0.0     # what the separation missed (mix - sum of stems), added back unprocessed
+refine = { enabled = false, power = 1.5, floor_db = -30.0 }  # bleed reduction: re-estimate the stems as
+                           # sharpened masks on the mix (power > 1 = less bleed; too high sounds "watery")
+# demucs backend
+model = "htdemucs_ft"      # htdemucs_ft = best quality; htdemucs = ~2x faster; htdemucs_6s adds guitar/piano
+shifts = 1                 # >1 averages several passes: slightly cleaner, proportionally slower
+overlap = 0.25
+
+# roformer backend: a plan's steps run in order. Each step separates its `input` stem ("mix" =
+# the recording) and maps the model's outputs to stem names; several outputs of one model may go
+# to one name (they are summed), unmapped outputs are left to the residual. A separated input is
+# replaced by its outputs. Names starting with "_" are intermediate. A step with `models = [...]`
+# runs each of them on the same input: a stem several models produce is their weighted average
+# (`weight` per model, `weights = { stem = w }` per stem; 0 = keep that output only for listening).
+# A step with `combine = "max_spec"` merges stems earlier steps made (`inputs`, into `output`): per
+# time-frequency bin the one with the largest magnitude (UVR's "Max Spec"). Per model, optionally:
+# segment_size (STFT frames) and chunk_s for models too big for the GPU/RAM, pitch_shift (semitones).
+# Every final stem gets the chain [tracks.<name>] (or the neutral [track_defaults]). Models
+# download on first use to ~/.cache/rehearsal-master/models; `uv run audio-separator
+# --list_models` lists them all, [stems.custom_models] adds others.
+[stems.custom_models."mdx23c_drumsep_5stem_aufr33_jarredou.ckpt"]  # the newer open DrumSep (kick/snare/toms
+arch = "MDXC"              # +1.7..2 dB SDR over the 6-stem one on MVSep's drum leaderboard); its original link is
+config = "mdx23c_drumsep_5stem_aufr33_jarredou_config.yaml"  # gone, this is a mirror, pinned by checksum and
+url = "https://huggingface.co/noblebarkrr/mvsepless_resources/resolve/main/mdx23c/mdx23c_drumsep_5stem_aufr33_jarredou.ckpt"
+config_url = "https://huggingface.co/noblebarkrr/mvsepless_resources/resolve/main/mdx23c/mdx23c_drumsep_5stem_aufr33_jarredou_config.yaml"
+sha256 = "1f8e636fb674b88a52c8399fde9a4ebe2b72b065ca07eed4e03ab1c9f0bfb2e0"  # loaded as plain tensors only
+config_sha256 = "b559768ab3209adb667d6d9c0bab2816107b03a86f75df432f9f275990ecb9bb"
+
+[stems.custom_models."bs_bass_xlancer.ckpt"]  # xlance's BS-RoFormer bass (MSR challenge 2026): +0.35 dB over SW's bass
+arch = "MDXC"              # on the room benchmark (better in 11/12 songs); same mirror, pinned the same way
+config = "bs_bass_xlancer_config.yaml"
+url = "https://huggingface.co/noblebarkrr/mvsepless_resources/resolve/main/bs_roformer/bs_bass_xlancer.ckpt"
+config_url = "https://huggingface.co/noblebarkrr/mvsepless_resources/resolve/main/bs_roformer/bs_bass_xlancer_config.yaml"
+sha256 = "c409465e3dccfd83fa34e6a807dbdae2f4f1db24f2f85a0fdc146b6fa828afff"
+config_sha256 = "dd9164936be88e636ccae0b6689e5b2f299f2cd9668918071e0795cd8cdd7e00"
+
+[stems.custom_models."bs_mega_53stem_bass_mvsep.ckpt"]  # MVSep Mega 53 stems, its bass part as a single-stem model
+arch = "MDXC"              # (noblebarkrr's split of ZFTurbo's v1.0.21 release); not in a plan, tried in sep_bench/bass_mega.py
+config = "bs_mega_53stem_bass_mvsep_config.yaml"
+url = "https://huggingface.co/noblebarkrr/BS-Roformer-MVSep-Mega-53-stems/resolve/main/v1/bs_mega_53stem_bass_mvsep.ckpt"
+config_url = "https://huggingface.co/noblebarkrr/BS-Roformer-MVSep-Mega-53-stems/resolve/main/v1/bs_mega_53stem_bass_mvsep_config.yaml"
+sha256 = "b17600dd1c2027a72ab34180ff6191d3bdeb786db9fbb13c58337c33fc10163c"
+config_sha256 = "f97022b5ed31120970b0ba9ace2ec2606159d4612b877345b1dc109a82434e20"
+
+# --- plan "ensemble" (default) ---------------------------------------------------------------
+# Weights fitted on the rehearsal-room benchmark (experiments/sep_bench: 12 multitrack songs placed
+# in a simulated room, picked up by an X/Y pair); against the cascade plan: vocals +0.45 dB SDR
+# (better in 12/12 songs), guitar +0.2, kick +0.2, snare +0.1, toms +0.6, drums and bass the same.
+# Candidates that earned ~0 weight there (KJ and becruily MelBand vocals, htdemucs_ft drums/bass)
+# are left out. See docs/DESIGN.md, stage 1.
+[[stems.plans.ensemble.steps]]  # 1. every stem from the whole recording; the vocals from three models
+input = "mix"
+models = [
+  { model = "BS-Roformer-SW.ckpt", outputs = { drums = "drums", bass = "_bass_sw", guitar = "guitar", piano = "other", other = "other", vocals = "vocals" }, weights = { vocals = 0.65 } },
+  { model = "bs_roformer_vocals_revive_v2_unwa.ckpt", outputs = { vocals = "vocals" }, weight = 0.22 },
+  { model = "model_bs_roformer_ep_317_sdr_12.9755.ckpt", outputs = { vocals = "vocals", instrumental = "_instrumental" }, weight = 0.13 },
+  { model = "bs_bass_xlancer.ckpt", outputs = { bass = "_bass_xlance" } },
+]
+
+[[stems.plans.ensemble.steps]]  # 2. a third bass: SW on the instrumental keeps more of the bass's upper partials
+input = "_instrumental"         # (the attack and growl that SW on the whole recording files under guitar and drums)
+model = "BS-Roformer-SW.ckpt"
+outputs = { bass = "_bass_instrumental" }
+
+[[stems.plans.ensemble.steps]]  # 3. the bass: per time-frequency bin the strongest of the three. On the benchmark +0.5 dB
+combine = "max_spec"            # over SW's (better in 11/12; it also rescues the songs where one model fails) and
+inputs = ["_bass_xlance", "_bass_sw", "_bass_instrumental"]  # 2-4 dB more of the upper partials (0.5-4 kHz), a little
+output = "bass"                 # more bleed (experiments/sep_bench/bass_tricks.py)
+
+[[stems.plans.ensemble.steps]]  # 4. the drum kit, piece by piece: both DrumSep models, averaged per piece
+input = "drums"                 # (the 5-stem one is better on kick and toms, the 6-stem one on snare; hi-hat/cymbals: the
+                                # benchmark cannot tell them apart, but the 6-stem one leaves many hat hits in its cymbals
+                                # (on Miramare 1.6 hits/s there against 1.0, and a hi-hat 4.5 dB weaker) and MVSep's drum
+                                # leaderboard has the 5-stem one ahead on both: mostly the 5-stem one there)
+models = [
+  { model = "mdx23c_drumsep_5stem_aufr33_jarredou.ckpt", outputs = { kick = "kick", snare = "snare", toms = "toms", hh = "hihat", cymbals = "cymbals" }, weights = { kick = 0.55, snare = 0.38, toms = 0.61, hihat = 0.75, cymbals = 0.75 } },
+  { model = "MDX23C-DrumSep-aufr33-jarredou.ckpt", outputs = { kick = "kick", snare = "snare", toms = "toms", hh = "hihat", ride = "cymbals", crash = "cymbals" }, weights = { kick = 0.45, snare = 0.62, toms = 0.39, hihat = 0.25, cymbals = 0.25 } },
+]
+
+[[stems.plans.ensemble.steps]]  # 5. (off) lead vs backing vocals
+enabled = false
+model = "mel_band_roformer_karaoke_becruily.ckpt"
+input = "vocals"
+outputs = { vocals = "vocals", instrumental = "backing_vocals" }
+
+[[stems.plans.ensemble.steps]]  # 6. split the room reverb off the vocals; [tracks.vocal_room] sets how much of it stays
+model = "dereverb_mel_band_roformer_less_aggressive_anvuew_sdr_18.8050.ckpt"
+input = "vocals"
+outputs = { noreverb = "vocals", reverb = "vocal_room" }
+
+# --- plan "cascade" (the earlier chain, kept as a fallback) ------------------------------------
+[[stems.plans.cascade.steps]]            # 1. vocals (both singers) vs everything else
+model = "model_bs_roformer_ep_317_sdr_12.9755.ckpt"
+input = "mix"
+outputs = { vocals = "vocals", instrumental = "_instrumental" }
+
+[[stems.plans.cascade.steps]]            # 2. instruments: no keys in this band, so piano goes to "other"
+model = "BS-Roformer-SW.ckpt"
+input = "_instrumental"
+outputs = { drums = "drums", bass = "bass", guitar = "guitar", piano = "other", other = "other", vocals = "vocals" }
+
+[[stems.plans.cascade.steps]]            # 3. the drum kit, piece by piece
+model = "MDX23C-DrumSep-aufr33-jarredou.ckpt"
+input = "drums"
+outputs = { kick = "kick", snare = "snare", toms = "toms", hh = "hihat", ride = "cymbals", crash = "cymbals" }
+
+[[stems.plans.cascade.steps]]            # 4. (off) lead vs backing vocals
+enabled = false
+model = "mel_band_roformer_karaoke_becruily.ckpt"
+input = "vocals"
+outputs = { vocals = "vocals", instrumental = "backing_vocals" }
+
+[[stems.plans.cascade.steps]]            # 5. split the room reverb off the vocals; [tracks.vocal_room] sets how much of it stays
+model = "dereverb_mel_band_roformer_less_aggressive_anvuew_sdr_18.8050.ckpt"
+input = "vocals"
+outputs = { noreverb = "vocals", reverb = "vocal_room" }
+
+[stems.vocal_room]         # the de-reverb step's two parts put back together before the vocal chain: alone, the
+recombine = true           # de-reverbed vocal sounds glitchy (the model files 25-70% of the voice as "room").
+max_reduction_db = 6.0     # The room is then turned down by at most this much (0 = the vocal as recorded),
+smooth_ms = 50.0           # with gains that follow the model's dry/room split but change no faster than this
+smooth_bins = 9            # and over this many STFT bins (~1/3 octave in the mids): no glitches.
+                           # recombine = false: "vocals" and "vocal_room" are separate tracks, as the model split them
+
+[stems.pan_split]          # (off) the two guitars, by where their amps stood in the room: each reaches the
+enabled = false            # recorder's left/right mics at a different level, so the guitar stem is split at the
+input = "guitar"           # gap between the two positions (kept as one stem if there is no gap). Runs on the
+                           # cached stems: switching it on or off needs no new separation.
+outputs = { left = "guitar_left", right = "guitar_right", both = "guitar" }
+
+# Every track chain starts from these neutral settings; [tracks.<name>] below only
+# lists what differs. Chain order:
+#   clean-up (stage 3): [snare buzz] -> expander -> clean-up ducks -> gate -> kit_gate
+#   studio (stage 2):   tone_match + eq (+ kick_eq) -> dynamic_eq -> resonance -> compressor -> kick_shaper
+#                       -> transient -> saturator -> exciter -> bass_enhancer
+#   mix:                mix ducks -> balance/width/pan -> gain
+# Before all of it every raw stem is profiled (stage 0: level, noise floor, tone, punch); the
+# "adapt" options and the tone match use that profile and the same instrument's median over
+# all songs (kept next to the stems), so a stem is corrected by how it differs from usual.
+[track_defaults]
+gain_db = 0.0
+balance = 0.0              # pull left/right energy towards centre (0 = off, 1 = fully)
+width = 1.0                # 0 = mono, 1 = unchanged
+pan = 0.0                  # -1 left ... +1 right, 0 = where it was (use with a small width to re-place a track)
+eq = []                    # linear-phase; types: peak, low_shelf, high_shelf, high_pass, low_pass
+dynamic_eq = []            # { freq_hz, q, threshold_db, ratio, max_cut_db }: cut a band while it is
+                           # threshold_db louder than usual (relative to the whole track);
+                           # { mode = "boost", ..., max_boost_db }: raise it while it is threshold_db thinner
+sends = []                 # space after the mix chain (space.py), each { type, level_lu, ... }: "plate" / "room"
+                           # { rt60_s, predelay_ms, damping, hp_hz, lp_hz }, "slap" { delay_ms, spread_ms, hp_hz,
+                           # lp_hz }, "tape_echo" { delay_ms, feedback, repeats, drive_db, wow_ms, wow_hz, hp_hz,
+                           # lp_hz }, "chorus" { delay_ms, depth_ms, rate_hz, hp_hz, lp_hz } (two detuned copies
+                           # panned hard left/right: width without distance), "delay" { delay_ms or delay_beats
+                           # (at the song's measured tempo), feedback, repeats, ping_pong, hp_hz, lp_hz };
+                           # level_lu: its loudness re the
+                           # dry track (measured, so alike in every song)
+ducks = []                 # { source, fmin_hz, fmax_hz, depth_db, release_ms, purpose }: dip fmin..fmax while
+                           # the source ("kick", "snare" or "toms" stem) hits, or "vocals" sings (1-4 kHz);
+                           # fmin_hz = 0 means everything below
+                           # fmax_hz; purpose "cleanup" (bleed removal, studio stem) or "mix" (default: room for
+                           # another instrument, applied in the mix)
+
+[track_defaults.tone_match]  # broad EQ towards this instrument's median tone over all songs: the same
+enabled = false              # instrument sounds alike in every song (a picked vs a fingered bass, a duller snare
+strength = 0.6               # take); the static eq below then gives it its character
+max_boost_db = 2.0
+max_cut_db = 3.0
+smooth_oct = 1.0             # broad moves only: notes and resonances are left alone
+fmin_hz = 40.0
+fmax_hz = 12000.0
+min_songs = 3                # fewer songs with this stem: no match
+reference = 0.0              # 0..1: blend the target towards raw, unprocessed studio tracks of the instrument
+                             # (references/raw_multitracks.json, Cambridge-MT): 0 = the band's own median.
+                             # Raw close mics hold the rest of the kit too (kick mics: cymbals; cymbal mics:
+                             # the kit's low end), so it is used gently and only inside each stem's range;
+                             # not on toms (cymbal bleed) nor bass (raw DI/amp tracks are much brighter)
+
+[track_defaults.augment]   # drum sample augmentation (augment.py): samples made from the drummer's cleanest hits
+enabled = false            # in this song (2 velocity layers; toms: one per drum, by pitch), placed phase-aligned
+mix = 0.3                  # and at each hit's velocity under the stem, at this level (0.3 = about -10 dB)
+length_ms = 400.0
+fmin_hz = 40.0             # band the hits are detected in
+fmax_hz = 150.0
+layers = 2
+max_hits = 24              # per sample
+min_hits = 8               # clean hits needed, or no augmentation
+pitch_clusters = 1         # toms: up to this many drums
+clean_of = ["snare", "toms"]  # a hit is clean when these are silent around it
+place_above_db = 18.0      # hits fainter than this below the loudest are bleed: no sample
+own = true                 # samples from the drummer's own hits (false: the library's only)
+min_corr = 0.6             # nor where the stem does not look like the sample
+# studio samples on the same hits: raw close-mic one-shots (tools/build_drum_samples.py builds them
+# from the Cambridge-MT multitracks), the one nearest this drum's pitch, tuned to it, loud/soft by
+# velocity, aligned and level-matched to each hit, blended at mix (0.4 = -8 dB under the hit);
+# flatten 0..1: how far their level ignores the drummer's dynamics (1 = every hit alike)
+# match: "pitch" (drums: the nearest pitch, tuned) or "brightness" (hi-hat: the nearest spectral centroid, untuned);
+# band_level: level-match within fmin..fmax only (a stem with bleed: the bleed does not count)
+library = { enabled = false, drum = "kick", mix = 0.4, dir = "~/.cache/rehearsal-master/drum_samples", max_pitch_shift = 0.25, flatten = 0.0, match = "pitch", band_level = false }
+
+[track_defaults.cymbal_augment]  # studio cymbal one-shots on the cymbals' hits, by kind (augment.py): bell (tonal),
+enabled = false            # crash (loud and ringing) or ride stroke, each with a single real hit of its kind from the
+fmin_hz = 3000.0           # library (tools/build_drum_samples.py), nearest in brightness, level-matched in this band
+fmax_hz = 14000.0
+place_above_db = 24.0      # fainter hits are bleed or the wash: no sample
+# under each hit (0.5 = about -6 dB). Bells off: a cymbal's bell has its own pitch (on Miramare 3.08, 3.77, 5.84 kHz),
+# another cymbal's bell on it clashes; the real ones are tonal and bright already
+mix = { crash = 0.5, ride = 0.35, bell = 0.0 }
+hp_hz = 2000.0             # the samples above this only: sizzle and attack, not another cymbal's pitched ping
+min_flatness = { ride = 0.15 }  # ride samples: noise-like ones only (a tonal ping clashes like a bell)
+# each sample stops (10 ms fade) at the next hit: strokes every 0.3 s would otherwise stack one sample 3 deep (phasing)
+bell_flatness = 0.6        # a bell: spectral flatness (in the band) under this x the stem's median hit
+crash_pct = 50.0           # a crash: among the loudest this % of hits...
+crash_hold_s = 0.6         # ...and ringing: all through this time never more than crash_floor_db under its peak
+crash_floor_db = 12.0      # (on Miramare: 13 hits, at section changes and the last chorus)
+dir = "~/.cache/rehearsal-master/drum_samples"
+
+[track_defaults.bass_fundamental]  # pitch-tracked fundamental reinforcement (augment.py): the bass's own
+enabled = false            # fundamental, extracted in phase, raised by boost_db; weak ones (high notes, a pick)
+boost_db = 2.0             # filled up to fill x the song's usual fundamental-to-note ratio
+fill = 0.7
+max_db = 9.0               # at most this much more fundamental on any note (fill included; restore below aside)
+fill_floor_db = 20.0       # no fill where the fundamental is this far under the usual ratio (octave errors)
+restore = false            # instead of fill: bring a note's fundamental up to restore_db re its 2nd harmonic where
+restore_db = -3.0          # it is weaker (raw studio bass: median about 0 dB; the band's low notes: about -22 dB)
+fmin_hz = 30.0             # pitch range: below the low E (41 Hz)
+fmax_hz = 300.0
+bandwidth_hz = 12.0        # tracking filter: how fast the fundamental may change
+attack_db = 0.0            # punch: this much more fundamental at each note's start (needs note_eq's onsets)...
+attack_ms = 60.0           # ...back to normal over this (the first third held)
+voiced_prob = 0.2          # pitch confidence needed (pyin, 0.5 s window: low notes found, not read an octave up)
+
+[track_defaults.harmonic_clean]  # pitched stems (the bass): turn down what lies between the note's harmonics, where
+enabled = false            # the pitch is known (augment.py): buzz, bleed, separation noise; harmonics, attacks and
+depth_db = 12.0            # gaps are left alone. Uses [..bass_fundamental]'s pitch settings
+fmin_hz = 150.0            # below, the harmonics are too close to tell apart
+fmax_hz = 5000.0
+tol_cents = 25.0           # how far from a harmonic still counts as on it (or tol_hz, whichever is wider),
+tol_hz = 5.0
+stretch = 0.0001           # plus the string's inharmonicity B: partial k runs about 866 B k^2 cents sharp
+comb_harmonics = 12        # up to here by the pitch (tells the bass's partials from tonal bleed); above, where
+peak_db = 6.0              # they are too sharp to predict, every spectral peak this far over its neighbourhood stays
+nfft = 16384               # analysis window (0.34 s): fine enough to see between the harmonics of a low E
+
+[track_defaults.note_eq]   # pitched stems (the bass), note by note (note_eq.py); replaces harmonic_clean when on:
+enabled = false            # each note keeps its harmonics up to where they stand out (its harmonic space), the rest
+depth_db = 15.0            # in the note goes down this much (between the harmonics, above the space)
+gap_depth_db = 6.0         # between notes, above gap_keep_hz (bleed; notes the pitch tracker missed lose only this)
+gap_keep_hz = 250.0
+fmin_hz = 250.0            # below, untouched: in a room the low end between the harmonics is still the bass (the last
+                           # note ringing, room modes; benchmark: -2 dB SDR at 90-250 Hz when cleaned); the kick duck does the rest
+fmax_hz = 8000.0           # analysis limit; above it nothing is a harmonic
+nfft = 8192                # 0.17 s: the harmonics of a low D (37 Hz) apart, notes of a 16th at 100 bpm not smeared much
+range_db = 70.0            # frames this far under the loudest are silence
+score_db = 5.0             # pitch check: the comb's mean contrast (dB) over what lies between its teeth, up to 1 kHz (noise: 0)
+hold_s = 0.15              # where pyin drops a note, its pitch from either side, if the spectrum agrees
+ceil_db = 3.0              # a band is in the note's space when its harmonics stand this far over what lies between...
+ceil_gap = 2               # ...with at most this many third-octave bands missing in a row (a pick position's nulls)
+space_range_db = 60.0      # and the band no more than this far under the note's loudest
+tol_cents = 25.0           # how far from a harmonic still counts as on it (or tol_hz, never under two bins)
+tol_hz = 5.0
+stretch = 0.0001           # the string's inharmonicity B (partial k about 866 B k^2 cents sharp)
+union_ms = 40.0            # the harmonics of every note within this much of a frame are kept (note changes)
+rise_db = 3.0              # a note onset: the 150-800 Hz band rises this much (or a new pitch); else drum bleed
+min_gap_s = 0.1            # one onset per note: the strongest of those closer than this (16ths at 100 bpm: 0.15 s)
+fundamental_pitch = "checked"  # the bass_fundamental follows this pitch ("pyin": pyin's confident frames only)
+after_chain = false        # once more at the end of the studio chain, on what the exciter and tone match brought up,
+after_chain_keep_above_hz = 0.0  # untouched above this (0 = cleaned all the way up: the exciter's harmonics go too)
+keep_above_hz = 0.0        # the same for the first pass (0: off)
+# per note and band, the attack (its first ms) against the note's body, moved towards the song's median
+# (left alone by the clean-up below protect_hz; above, the separated stem's "attack" is only noise)
+attack = { enabled = true, ms = 30.0, release_ms = 40.0, strength = 0.7, tol_db = 3.0, max_cut_db = 9.0, max_boost_db = 2.0, bands_hz = [150.0, 400.0, 1000.0, 2500.0, 6000.0, 20000.0], protect_hz = 1500.0 }
+
+[track_defaults.grit]      # parallel band distortion (space.py): the track driven hard, band-passed, blended under it
+enabled = false
+drive_db = 18.0
+band_hz = [800.0, 2000.0]
+level_db = -10.0           # its RMS re the track's
+
+[track_defaults.dual]      # dual (split-band, "bi-amp") chain (space.py), for the bass: below crossover_hz clean,
+enabled = false            # mono and steady (low_compressor); above it driven and chorused (stereo)
+crossover_hz = 250.0
+drive_db = 12.0
+drive_mix = 0.5            # 0 = clean, 1 = all driven (the upper part only)
+chorus_mix = 0.0           # stereo chorus on the upper part: 0 = off, 0.5 = classic
+chorus_depth_ms = 1.8
+chorus_rate_hz = 0.6
+high_gain_db = 0.0         # the upper part against its clean self
+low_compressor = { enabled = true, threshold_pct = 50.0, ratio = 4.0, knee_db = 6.0, attack_ms = 20.0, release_ms = 150.0, rms_ms = 15.0 }
+
+[track_defaults.resonance] # spectral dynamic EQ: tames ringing notes / harsh resonances wherever they are
+enabled = false
+fmin_hz = 40.0
+fmax_hz = 400.0
+threshold_db = 4.0         # how far a frequency must stick out of the smoothed spectrum
+strength = 0.6             # share of the excess removed
+depth_db = 6.0             # maximum cut
+smooth_oct = 0.5
+release_ms = 120.0
+average_ms = 0.0           # >0: the level averaged over this long first: only steady resonances (room modes) cut,
+                           # not each note's harmonics (a bass's are resolved peaks: cut, the smear between gains)
+
+[track_defaults.compressor]
+enabled = false
+threshold_pct = 60.0
+ratio = 3.0
+knee_db = 6.0
+attack_ms = 10.0
+release_ms = 100.0
+rms_ms = 5.0
+
+[track_defaults.compressor2]  # a second compressor after the first (serial compression), same settings
+enabled = false
+threshold_pct = 60.0
+ratio = 3.0
+knee_db = 6.0
+attack_ms = 10.0
+release_ms = 100.0
+rms_ms = 5.0
+
+[track_defaults.transient]
+enabled = false
+crossovers_hz = []         # e.g. [150.0, 5000.0]: shape kick / shells / cymbals separately,
+attack = 0.0               #   then attack and sustain are lists, one value per band
+sustain = 0.0              # attack > 0 boosts each hit's onset, < 0 softens it;
+max_db = 6.0               # sustain < 0 shortens decays, i.e. less room sound
+adapt = false              # scale attack by how the stem's measured punch compares with this
+                           # instrument's usual one: x2 per 6 dB duller, /2 per 6 dB sharper (0.5..2)
+
+[track_defaults.kick_eq]   # finds the kick's fundamental in the track and boosts it
+enabled = false
+gain_db = 3.0
+q = 1.4
+fmin_hz = 50.0
+fmax_hz = 120.0
+
+[track_defaults.kick_shaper]  # hit-by-hit kick punch on the track's low band (drum stem)
+enabled = false
+fmax_hz = 150.0
+punch_db = 4.0             # boost over the first punch_ms of each kick
+punch_ms = 40.0
+attack_db = 0.0            # extra boost on the very start of each hit (harder onset)
+attack_ms = 15.0
+tail_db = 3.0              # cut of the boom ringing after it
+tail_start_ms = 70.0
+tail_ms = 200.0
+
+[track_defaults.gate]      # hit gate: turn a drum stem down between its own hits (detected in fmin..fmax)
+enabled = false
+fmin_hz = 150.0
+fmax_hz = 6000.0
+depth_db = 6.0
+release_ms = 150.0
+buzz_extra_db = 0.0        # the buzz band (buzz_band_hz) this much further down between hits
+buzz_band_hz = [1200.0, 12000.0]
+
+[track_defaults.expander]  # clean-up of the gaps: below (playing level - below_db) push the level down further
+enabled = false
+below_db = 35.0
+ratio = 2.0
+range_db = 10.0            # at most this much
+hold_ms = 120.0            # how slowly it closes after a note
+adapt = false              # threshold just above the stem's measured noise floor (floor + floor_margin_db), if
+floor_margin_db = 4.0      # that is between min_below_db and below_db under the playing level: a hissy amp gets
+min_below_db = 25.0        # cleaned; a floor closer than that is quiet playing (a stem that never pauses): unchanged
+
+[track_defaults.kit_gate]  # hi-hat / cymbals: turn down while the drummer is not playing (no kick/snare/tom
+enabled = false            # hit for hold_s): then the stem only holds resonance and bleed
+depth_db = 15.0
+hold_s = 2.0
+own_onset_db = 12.0        # the stem's own sharp, strong hits also open it (count-in, lone ride)
+own_hold_s = 1.0
+
+[track_defaults.saturator] # tube/tape warmth: even harmonics from a soft, slightly asymmetric curve
+enabled = false
+engine = "builtin"         # or "chowtape": Chowdhury DSP's CHOW Tape Model (VST3, see plugins.py), fully wet,
+                           # dosed with its drive / saturation (drive_db, even and mix are then not used)
+drive_db = 6.0             # relative to the track's own level
+even = 0.6                 # 0 = symmetric (odd harmonics), 1 = most even harmonics (warmer)
+mix = 0.3                  # parallel blend of the saturated signal
+chowtape = { path = "~/.vst3/CHOWTapeModel.vst3", level_db = -18.0, input_gain_db = 0.0, drive = 0.5, saturation = 0.5, bias = 0.8, speed_ips = 15.0, loss = true, oversampling = 4 }
+
+[track_defaults.exciter]   # brightness from generated overtones instead of a treble boost
+enabled = false
+freq_hz = 3000.0           # overtones of content above this
+amount_db = -14.0          # overtone level relative to that content
+drive = 2.0
+even = 0.5                 # 0 = odd harmonics (edgier), 1 = even (smoother)
+
+[track_defaults.bass_enhancer]  # overtones of the lowest notes, audible on small speakers
+enabled = false
+cutoff_hz = 120.0
+amount_db = -10.0
+drive = 2.0
+even = 0.7
+
+[tracks.vocals]
+gain_db = 2.5              # bring the singer forward
+balance = 0.8
+width = 0.5                # vocals belong in the centre
+eq = [                     # male rock vocals
+  { type = "high_pass", freq_hz = 80.0, q = 0.7 },              # rumble, kick/bass bleed
+  { type = "peak", freq_hz = 180.0, gain_db = 1.0, q = 0.8 },   # warmth (100-250 Hz); the dynamic band adds more when thin
+  { type = "peak", freq_hz = 450.0, gain_db = -2.0, q = 1.0 },  # boxiness / room (400-600 Hz)
+  { type = "peak", freq_hz = 3500.0, gain_db = 3.0, q = 0.8 },  # presence (3-5 kHz)
+]
+dynamic_eq = [
+  { freq_hz = 7000.0, q = 1.5, threshold_db = 6.0, ratio = 4.0, max_cut_db = 6.0 },  # de-esser
+  # chest resonance: when the voice goes thin (180 Hz share 3 dB below usual), swell it back, as the
+  # proximity of a close mic would
+  { mode = "boost", freq_hz = 180.0, q = 0.9, threshold_db = 3.0, ratio = 2.0, max_boost_db = 3.0 },
+]
+compressor = { enabled = true, threshold_pct = 50.0, ratio = 3.0, knee_db = 6.0, attack_ms = 5.0, release_ms = 80.0, rms_ms = 5.0 }
+saturator = { enabled = true, drive_db = 3.0, even = 0.7, mix = 0.15 }
+exciter = { enabled = true, freq_hz = 3000.0, amount_db = -16.0, drive = 2.0, even = 0.7 }
+tone_match = { enabled = true, strength = 0.5, max_boost_db = 2.0, max_cut_db = 2.5, fmin_hz = 100.0, fmax_hz = 12000.0, reference = 0.3 }
+# space that sits the voice in the band rather than on top of it: a short plate and a slapback, quiet
+# (the room it was sung in is there too: the recombined vocal)
+sends = [
+  { type = "plate", level_lu = -18.0, rt60_s = 1.1, predelay_ms = 15.0, damping = 0.5, hp_hz = 250.0, lp_hz = 7000.0 },
+  { type = "slap", level_lu = -22.0, delay_ms = 95.0, spread_ms = 12.0, hp_hz = 300.0, lp_hz = 4500.0 },
+]
+
+[tracks.drums]
+gain_db = -1.0
+balance = 0.8
+eq = [
+  { type = "peak", freq_hz = 400.0, gain_db = -2.0, q = 1.0 },        # boxy shells / room
+  { type = "high_shelf", freq_hz = 7000.0, gain_db = -1.0, q = 0.7 }, # a little calmer cymbals
+]
+kick_eq = { enabled = true, gain_db = 3.0, q = 1.4, fmin_hz = 50.0, fmax_hz = 120.0 }
+dynamic_eq = [
+  { freq_hz = 4500.0, q = 1.0, threshold_db = 4.0, ratio = 3.0, max_cut_db = 4.0 },  # cymbal crashes
+  { freq_hz = 8000.0, q = 0.8, threshold_db = 3.0, ratio = 3.0, max_cut_db = 5.0 },  # cymbal sizzle
+]
+# 30 ms attack: hits pass through, the compressor only rides the overall drum level
+compressor = { enabled = true, threshold_pct = 85.0, ratio = 2.0, knee_db = 6.0, attack_ms = 30.0, release_ms = 100.0, rms_ms = 5.0 }
+kick_shaper = { enabled = true, fmax_hz = 150.0, punch_db = 5.0, punch_ms = 40.0, attack_db = 0.0, attack_ms = 15.0, tail_db = 4.0, tail_start_ms = 70.0, tail_ms = 200.0 }
+# below 5 kHz (kick, snare, toms): tighter, less room / cymbals: softer attack, shorter wash
+transient = { enabled = true, crossovers_hz = [5000.0], attack = [0.3, -0.3], sustain = [-0.4, -0.3], max_db = 6.0 }
+
+[tracks.bass]
+width = 0.0                # mono
+expander = { enabled = true, below_db = 35.0, ratio = 2.0, range_db = 10.0, hold_ms = 150.0, adapt = true }  # gaps: hiss/bleed
+# between the harmonics of each note: the separated bass carries buzz, bleed and separation noise there (on the
+# band's recordings only 5 dB under the harmonics at 0.6-2 kHz); harmonics and attacks stay
+harmonic_clean = { enabled = true, fmax_hz = 2000.0 }  # above, the pick attack (not on any harmonic) would go too
+# a picked bass is brighter than a fingered one: the tone match evens that out between songs, and halfway towards
+# raw studio bass tracks (the room adds 3-12 dB of box at 250-400 Hz)
+tone_match = { enabled = true, strength = 0.7, max_boost_db = 1.5, max_cut_db = 5.0, fmin_hz = 35.0, fmax_hz = 5000.0, reference = 0.5 }
+eq = [
+  { type = "high_pass", freq_hz = 32.0, q = 0.7 },              # sub rumble (below the low E, 41 Hz)
+  { type = "low_shelf", freq_hz = 100.0, gain_db = 1.5, q = 0.7 },  # weight (40-100 Hz); bass_fundamental adds the rest
+  { type = "peak", freq_hz = 350.0, gain_db = -2.0, q = 0.7 },  # boxy low-mids, wide (300-400 Hz)
+  { type = "peak", freq_hz = 800.0, gain_db = 1.0, q = 1.0 },   # definition (0.7-1 kHz)
+  { type = "peak", freq_hz = 2500.0, gain_db = 0.5, q = 0.9 },  # a little string attack (pick clack is already there)
+  { type = "low_pass", freq_hz = 6000.0, q = 0.7 },             # nothing useful above, only bleed and pick noise
+]
+ducks = [{ source = "kick", fmin_hz = 0.0, fmax_hz = 120.0, depth_db = 3.5, release_ms = 150.0 }]  # room for the kick body
+saturator = { enabled = true, drive_db = 4.0, even = 0.7, mix = 0.25 }
+resonance = { enabled = true, fmin_hz = 40.0, fmax_hz = 400.0, threshold_db = 4.0, strength = 0.6, depth_db = 6.0, smooth_oct = 0.5, release_ms = 120.0 }
+# 30 ms attack lets each note's pluck through before the compressor reacts
+compressor = { enabled = true, threshold_pct = 60.0, ratio = 3.0, knee_db = 6.0, attack_ms = 30.0, release_ms = 150.0, rms_ms = 15.0 }
+transient = { enabled = true, crossovers_hz = [500.0], attack = [0.4, 0.15], sustain = [0.0, 0.0], max_db = 6.0 }  # note onsets, body first; the clank less
+# a little growl (odd harmonics) from the mids; less than before: with a pick it got too clanky
+# the top (string and pick) from the cleaned stem; mostly even harmonics: warm, where odd ones on the noisy stem buzzed
+exciter = { enabled = true, freq_hz = 500.0, amount_db = -19.0, drive = 3.0, even = 0.8 }
+bass_enhancer = { enabled = true, cutoff_hz = 120.0, amount_db = -9.0, drive = 2.0, even = 0.7 }
+# the body: each note's fundamental raised 2 dB, and brought up to 3 dB under its 2nd harmonic where it is weaker
+# (low notes: the room and the recorder lose 40-60 Hz, 22 dB under the 2nd harmonic on the band's E1/A1 notes)
+bass_fundamental = { enabled = true, boost_db = 2.0, restore = true, restore_db = -3.0 }
+
+[tracks.guitar]            # both guitars (roformer backend)
+expander = { enabled = true, below_db = 35.0, ratio = 2.0, range_db = 8.0, hold_ms = 200.0, adapt = true }  # amp hiss in the gaps
+tone_match = { enabled = true, strength = 0.5, max_boost_db = 2.0, max_cut_db = 2.5, fmin_hz = 80.0, fmax_hz = 10000.0, reference = 0.4 }
+balance = 0.8              # mostly re-centred: the two amps' left/right spread is kept, but smaller
+width = 0.6                # narrower: less of the room's left/right reflections (not mono: the stem holds both guitars)
+eq = [
+  { type = "high_pass", freq_hz = 80.0, q = 0.7 },                     # room for the bass, below the low E's body
+  { type = "peak", freq_hz = 170.0, gain_db = 2.5, q = 0.8 },          # body / warmth (120-250 Hz)
+  { type = "peak", freq_hz = 350.0, gain_db = -1.0, q = 1.6 },         # mud (300-400 Hz), narrow so the body stays
+  { type = "peak", freq_hz = 6000.0, gain_db = -2.0, q = 1.0 },        # fizz (5.5-6 kHz)
+  { type = "high_shelf", freq_hz = 8000.0, gain_db = -1.5, q = 0.7 },  # smoother top
+]
+ducks = [
+  { source = "kick", fmin_hz = 0.0, fmax_hz = 150.0, depth_db = 3.0, release_ms = 150.0 },     # room for the kick's body
+  { source = "kick", fmin_hz = 2000.0, fmax_hz = 5000.0, depth_db = 2.5, release_ms = 60.0 },  # ...and for its click
+  { source = "snare", fmin_hz = 2000.0, fmax_hz = 6000.0, depth_db = 2.0, release_ms = 80.0, purpose = "cleanup" },  # snare-crack bleed
+  # unmasking: while the singer sings, the guitars make a little room where the voice's words are
+  { source = "vocals", fmin_hz = 1500.0, fmax_hz = 4000.0, depth_db = 2.0, release_ms = 200.0 },
+]
+dynamic_eq = [
+  { freq_hz = 2800.0, q = 1.2, threshold_db = 4.0, ratio = 3.0, max_cut_db = 5.0 },  # fizz
+  # room mud: the amp's sustain building up in the room's low-mids (300-600 Hz); cut only while it does
+  { freq_hz = 420.0, q = 1.0, threshold_db = 3.0, ratio = 2.5, max_cut_db = 3.0, release_ms = 150.0 },
+]
+resonance = { enabled = true, fmin_hz = 1500.0, fmax_hz = 8000.0, threshold_db = 5.0, strength = 0.5, depth_db = 4.0, smooth_oct = 0.5, release_ms = 80.0 }
+saturator = { enabled = true, drive_db = 6.0, even = 0.75, mix = 0.4 }   # tube warmth (replaces the exciter)
+
+[tracks.guitar_left]       # with the (off by default) pan split: the guitar heard more on the left;
+based_on = "guitar"        # same chain as [tracks.guitar]
+balance = 0.0              # no re-centring: it is placed with pan instead
+width = 0.5                # narrow it (keeps some room), then place it
+pan = 0.15                 # recorded hard left: this leaves it about 5 dB left
+
+[tracks.guitar_right]      # the other guitar (near the centre as recorded), moved a little right
+based_on = "guitar"
+balance = 0.0
+width = 0.5
+pan = 0.3                  # about 5 dB right
+
+[tracks.kick]              # drum-kit stems (roformer backend: step 4)
+eq = [
+  { type = "high_pass", freq_hz = 35.0, q = 0.7 },               # useless sub (30-50 Hz)
+  { type = "peak", freq_hz = 250.0, gain_db = -2.0, q = 1.2 },   # resonance that blurs the hit (200-300 Hz)
+  { type = "peak", freq_hz = 450.0, gain_db = -1.5, q = 1.0 },   # cardboard boxiness (300-700 Hz)
+  { type = "peak", freq_hz = 3500.0, gain_db = 4.0, q = 1.2 },   # beater click (1-4 kHz): less dull
+  { type = "high_shelf", freq_hz = 10000.0, gain_db = -4.0, q = 0.7 },  # cymbal bleed
+]
+# punch and body (60-120 Hz): a wide boost at the kick's own pitch, found automatically
+kick_eq = { enabled = true, gain_db = 3.5, q = 1.0, fmin_hz = 50.0, fmax_hz = 120.0 }
+# no compressor on hit stems (kick/snare/toms): between hits they are mostly bleed, and make-up
+# gain would turn that up; the shapers give the punch, the mix-wide stages control the level
+# boost the whole hit including its body (100 ms), trim only the boom ringing after it
+kick_shaper = { enabled = true, fmax_hz = 20000.0, punch_db = 3.5, punch_ms = 100.0, attack_db = 3.0, attack_ms = 15.0, tail_db = 3.0, tail_start_ms = 160.0, tail_ms = 200.0 }
+transient = { enabled = true, crossovers_hz = [1500.0], attack = [0.0, 0.8], sustain = [0.0, -0.3], max_db = 6.0, adapt = true }  # sharper beater
+tone_match = { enabled = true, strength = 0.6, max_boost_db = 2.0, max_cut_db = 3.0, fmin_hz = 40.0, fmax_hz = 8000.0, reference = 0.3 }
+augment = { enabled = true, mix = 0.3, length_ms = 400.0, fmin_hz = 40.0, fmax_hz = 150.0, clean_of = ["snare", "toms"], library = { enabled = true, drum = "kick", mix = 0.4 } }
+
+[tracks.snare]
+eq = [
+  { type = "high_pass", freq_hz = 90.0, q = 0.7 },
+  { type = "peak", freq_hz = 200.0, gain_db = 1.5, q = 1.2 },   # body (150-250 Hz)
+  { type = "peak", freq_hz = 700.0, gain_db = -2.0, q = 1.0 },  # boxiness / ring (400-800 Hz)
+  { type = "peak", freq_hz = 3000.0, gain_db = 2.5, q = 1.0 },  # crack (2-4 kHz)
+  { type = "high_shelf", freq_hz = 8000.0, gain_db = 1.0, q = 0.7 },  # snap (8-12 kHz); the gate keeps the jingles down
+]
+dynamic_eq = [
+  { freq_hz = 4500.0, q = 1.2, threshold_db = 6.0, ratio = 2.0, max_cut_db = 3.0 },  # only the harshest wire buzz (3-5 kHz)
+]
+# between its own hits the snare stem is mostly its wires buzzing along with the kick and bass
+# (hits are detected on the drum's body, 150-400 Hz, where the wires add little)
+# between hits the wires' buzz band (1.2-12 kHz), driven by the voice and the bass, goes 10 dB further
+gate = { enabled = true, fmin_hz = 150.0, fmax_hz = 400.0, depth_db = 8.0, release_ms = 180.0, buzz_extra_db = 10.0 }
+# body: tighter / crack (1-5 kHz): much sharper / wires & jingles: a little snap, shorter
+transient = { enabled = true, crossovers_hz = [1000.0, 5000.0], attack = [0.3, 0.8, 0.3], sustain = [-0.3, -0.4, -0.3], max_db = 6.0, adapt = true }
+tone_match = { enabled = true, strength = 0.6, max_boost_db = 2.0, max_cut_db = 3.0, fmin_hz = 100.0, fmax_hz = 12000.0, reference = 0.3 }
+augment = { enabled = true, mix = 0.3, length_ms = 350.0, fmin_hz = 150.0, fmax_hz = 400.0, clean_of = ["kick", "toms"], library = { enabled = true, drum = "snare", mix = 0.4 } }
+
+[tracks.toms]
+expander = { enabled = false, below_db = 35.0, ratio = 2.0, range_db = 10.0, hold_ms = 120.0 }  # (the hit gate does this)
+eq = [
+  { type = "high_pass", freq_hz = 60.0, q = 0.7 },
+  { type = "peak", freq_hz = 500.0, gain_db = -2.5, q = 1.0 },  # cardboard boxiness (400-600 Hz)
+  { type = "peak", freq_hz = 5000.0, gain_db = 1.5, q = 1.2 },  # stick attack (5-7 kHz)
+]
+gate = { enabled = true, fmin_hz = 70.0, fmax_hz = 400.0, depth_db = 10.0, release_ms = 250.0 }  # between hits: bleed
+transient = { enabled = true, attack = 0.3, sustain = -0.5, max_db = 6.0, adapt = true }   # shorter ring
+tone_match = { enabled = true, strength = 0.5, max_boost_db = 2.0, max_cut_db = 3.0, fmin_hz = 60.0, fmax_hz = 10000.0 }
+augment = { enabled = true, mix = 0.3, length_ms = 600.0, fmin_hz = 70.0, fmax_hz = 400.0, min_hits = 6, pitch_clusters = 3, clean_of = ["snare"], library = { enabled = true, drum = "toms", mix = 0.4 } }
+
+[tracks.hihat]             # the tamburello's jingles probably land here or in cymbals
+eq = [
+  { type = "high_pass", freq_hz = 500.0, q = 0.7 },   # below this it is snare and kick bleed (half the raw stem)
+  { type = "peak", freq_hz = 4500.0, gain_db = -0.5, q = 1.4 },  # harshness (3-6 kHz), gently: this is the hats' core
+]
+dynamic_eq = [
+  { freq_hz = 8000.0, q = 0.8, threshold_db = 4.0, ratio = 2.0, max_cut_db = 3.0 },
+]
+# each kick makes the snare wires rattle (2-8 kHz), and the drum splitter files that under hi-hat;
+# the buzz removal (stage 3) takes most of it, and hats often land with the kick: only a small dip
+ducks = [{ source = "kick", fmin_hz = 2000.0, fmax_hz = 8000.0, depth_db = 2.0, release_ms = 120.0, purpose = "cleanup" }]
+# in intros/breaks without drums the stem is only the snare resonating with bass and guitars
+kit_gate = { enabled = true, depth_db = 10.0, hold_s = 2.0, own_onset_db = 10.0, own_hold_s = 1.5 }
+transient = { enabled = true, crossovers_hz = [2000.0], attack = [0.0, 0.3], sustain = [0.0, 0.0], max_db = 6.0, adapt = false }  # (as the cymbals)
+# studio hi-hat one-shots on its hits (the separated hats lost their stick attack and top): single real hits from
+# raw close mics (tools/build_drum_samples.py, an average of noisy hats would be a dull blur), the one nearest in
+# brightness, untuned, level-matched in the hats' band (bleed does not count), 2 dB under each hit
+augment = { enabled = true, own = false, fmin_hz = 6000.0, fmax_hz = 14000.0, length_ms = 200.0, library = { enabled = true, drum = "hihat", mix = 0.8, match = "brightness", band_level = true } }
+gain_db = 4.0              # the hats sounded low under the cymbals (their group is balanced as one)
+# towards raw studio hi-hat tracks, not the band's own median (which carries the snare/kick bleed of the
+# separated stems: +5 dB at 500 Hz): less boxy, the top back (separated hats are 3-5 dB dull above 8 kHz)
+tone_match = { enabled = true, strength = 0.7, max_boost_db = 3.0, max_cut_db = 4.0, fmin_hz = 500.0, fmax_hz = 16000.0, reference = 0.8 }
+
+[tracks.cymbals]           # ride + crash
+eq = [
+  { type = "high_pass", freq_hz = 500.0, q = 0.7 },              # cymbal-only stem (400-600 Hz)
+  { type = "peak", freq_hz = 1600.0, gain_db = 2.5, q = 0.9 },    # body (1-2 kHz, the metal): separated cymbals lack 4-5 dB
+  { type = "peak", freq_hz = 3500.0, gain_db = -0.75, q = 1.0 },  # harshness (2-5 kHz), gently: a crash's sizzle lives there
+  { type = "high_shelf", freq_hz = 7000.0, gain_db = 0.5, q = 0.7 },  # the air (full hits sounded dull: processing took 1-1.5 dB)
+]
+dynamic_eq = [  # only the loudest crashes / sizzle
+  { freq_hz = 4500.0, q = 1.0, threshold_db = 5.0, ratio = 2.0, max_cut_db = 3.0 },
+  { freq_hz = 8000.0, q = 0.8, threshold_db = 4.0, ratio = 2.0, max_cut_db = 3.0 },
+]
+# snare-wire rattle; only 2 dB because crashes often land on a kick
+ducks = [{ source = "kick", fmin_hz = 2000.0, fmax_hz = 8000.0, depth_db = 2.0, release_ms = 120.0, purpose = "cleanup" }]
+kit_gate = { enabled = true, depth_db = 10.0, hold_s = 3.0, own_onset_db = 10.0, own_hold_s = 3.0 }  # crashes ring long
+# the separated hits are flat: a little attack above 2 kHz (the bell and wash below untouched); +0.3 keeps the SDR
+transient = { enabled = true, crossovers_hz = [2000.0], attack = [0.0, 0.3], sustain = [0.0, 0.0], max_db = 6.0 }
+# towards raw studio cymbal tracks: the separated ones lack the 1-2 kHz body (5-7 dB) that makes them metal, not wash
+tone_match = { enabled = true, strength = 0.7, max_boost_db = 3.0, max_cut_db = 4.0, fmin_hz = 500.0, fmax_hz = 16000.0, reference = 0.8 }
+
+# studio crash, ride and bell hits on the cymbals' hits, by kind (the separated ones are dull and flat at the hits)
+cymbal_augment = { enabled = true }
+[tracks.backing_vocals]    # only with the (off by default) lead/backing step
+gain_db = -1.0
+eq = [
+  { type = "high_pass", freq_hz = 120.0, q = 0.7 },
+  { type = "peak", freq_hz = 350.0, gain_db = -2.0, q = 1.0 },
+]
+compressor = { enabled = true, threshold_pct = 50.0, ratio = 3.0, knee_db = 6.0, attack_ms = 5.0, release_ms = 80.0, rms_ms = 5.0 }
+
+[tracks.vocal_room]        # the rehearsal room's sound on the vocals (de-reverb step)
+gain_db = -4.0             # less room = clearer vocals; 0 = as recorded, lower than -8 can sound dry/phasey
+
+[tracks.other]             # tamburello and anything not caught above (guitars and keys with the demucs backend)
+balance = 0.8
+ducks = [
+  { source = "kick", fmin_hz = 0.0, fmax_hz = 150.0, depth_db = 2.5, release_ms = 120.0 },  # low end vs kick
+  { source = "snare", fmin_hz = 2000.0, fmax_hz = 6000.0, depth_db = 2.0, release_ms = 80.0, purpose = "cleanup" },  # snare-crack bleed
+]
+eq = [
+  { type = "peak", freq_hz = 300.0, gain_db = -1.5, q = 0.8 },
+]
+dynamic_eq = [
+  { freq_hz = 2800.0, q = 1.2, threshold_db = 4.0, ratio = 3.0, max_cut_db = 5.0 },  # guitar fizz
+]
+resonance = { enabled = true, fmin_hz = 1500.0, fmax_hz = 8000.0, threshold_db = 5.0, strength = 0.5, depth_db = 4.0, smooth_oct = 0.5, release_ms = 80.0 }
+exciter = { enabled = true, freq_hz = 3000.0, amount_db = -18.0, drive = 2.0, even = 0.5 }
+
+[tracks.mix]               # used instead of the tracks above when separation is off
+dynamic_eq = [
+  { freq_hz = 2800.0, q = 1.2, threshold_db = 5.0, ratio = 2.0, max_cut_db = 3.0 },
+]
+exciter = { enabled = true, freq_hz = 3000.0, amount_db = -20.0, drive = 2.0, even = 0.5 }
+bass_enhancer = { enabled = true, cutoff_hz = 120.0, amount_db = -14.0, drive = 2.0, even = 0.7 }
+
+[stereo]
+enabled = true
+mono_below_hz = 120.0      # mono low end, like on every record; also fixes lopsided bass...
+mono_ramp_hz = [50.0, 400.0]  # ...or (when set) mono below 50 Hz, widening gradually to full width at 400 Hz,
+                           # as engineers pan (De Man 2017); [] = the hard split at mono_below_hz
+width = 1.0                # side level above mono_below_hz (1.0 = unchanged, 1.2 = 20% wider)
+
+[eq]
+enabled = true
+measure_before_tracks = true  # measure the recording itself, so per-track EQ moves are kept
+strength = 0.7             # 0 = no automatic correction, 1 = match the target curve fully
+tilt_db_per_oct = -2.0     # target tilt in 1/3-octave band power; more negative = darker/warmer
+hf_rolloff_hz = 10000.0    # the target falls faster above this frequency...
+hf_rolloff_db_per_oct = -6.0
+fmin_hz = 60.0             # no automatic correction outside fmin..fmax
+fmax_hz = 16000.0
+smoothing_oct = 1.0        # wide smoothing keeps the moves broad, so notes/room modes are left alone
+max_boost_db = 3.0
+max_cut_db = 6.0
+fir_taps = 8191
+# Manual moves, applied on top of the automatic curve. Types: peak, low_shelf, high_shelf.
+# manual = [
+#   { type = "peak", freq_hz = 3000.0, gain_db = 1.5, q = 1.0 },
+#   { type = "high_shelf", freq_hz = 10000.0, gain_db = -1.0, q = 0.7 },
+# ]
+manual = []
+
+[multiband]
+enabled = true
+crossovers_hz = [120.0, 600.0, 4000.0]
+balance_strength = 0.8     # pull each band's left/right energy towards centre (0 = off)
+balance_max_db = 4.0
+
+# One entry per band, low to high. Gentle ratios: listeners prefer more dynamic range at equal
+# loudness (De Man 2017), and the stems and the drum bus are already compressed. threshold_pct: the band compresses whenever it is louder
+# than this percentile of its own level, so the settings act the same on hot or quiet takes.
+# Each band gets automatic make-up gain: dynamics are evened out, tonal balance is kept.
+[[multiband.bands]]
+name = "low"               # kick, bass guitar (the bass track has its own compressor; keep this gentle
+threshold_pct = 90.0       # and slow so kick hits get through)
+ratio = 1.25
+knee_db = 6.0
+attack_ms = 30.0
+release_ms = 150.0
+rms_ms = 10.0
+
+[[multiband.bands]]
+name = "low-mid"           # room boom, guitar/bass body
+threshold_pct = 85.0
+ratio = 1.5
+knee_db = 6.0
+attack_ms = 10.0
+release_ms = 120.0
+rms_ms = 10.0
+
+[[multiband.bands]]
+name = "mid"               # vocals, guitars, snare
+threshold_pct = 90.0
+ratio = 1.25
+knee_db = 6.0
+attack_ms = 8.0
+release_ms = 100.0
+rms_ms = 5.0
+
+[[multiband.bands]]
+name = "high"              # cymbals, sibilance
+threshold_pct = 90.0
+ratio = 1.5
+knee_db = 6.0
+attack_ms = 3.0
+release_ms = 80.0
+rms_ms = 5.0
+
+[saturation]               # gentle tape warmth on the whole mix (before the glue compressor)
+enabled = true
+engine = "chowtape"        # CHOW Tape Model (a reel-to-reel machine at 15 ips); falls back to "builtin" if missing.
+                           # chowtape: the mix is aligned to level_db RMS ("0 VU") and hit input_gain_db harder;
+                           # drive / saturation 0..1; bias 0..1 (low = gritty under-biased tape, 0.8 = clean)
+drive_db = 2.0             # (builtin)
+even = 0.5
+mix = 0.2
+chowtape = { path = "~/.vst3/CHOWTapeModel.vst3", level_db = -18.0, input_gain_db = 0.0, drive = 0.5, saturation = 0.5, bias = 0.8, speed_ips = 15.0, loss = true, oversampling = 4 }
+
+[rider]                    # vocal rider: an engineer's hand on the vocal fader. Where the band gets dense, the
+enabled = true             # words (band_hz) lose ground: the vocal goes up while its ratio to the band there is
+stems = ["vocals", "backing_vocals"]  # under its usual (median), and a little down where it stands out
+band_hz = [1000.0, 4000.0]
+strength = 0.6
+max_up_db = 3.0
+max_down_db = 1.5
+window_ms = 400.0
+smooth_ms = 300.0
+
+[consistency]              # the same band sounds alike in every song: each mix's long-term tone is moved part of
+enabled = true             # the way towards the median tone of this preset's songs (kept in <dir>/_mixtone/)
+strength = 0.5
+max_boost_db = 1.5
+max_cut_db = 1.5
+smooth_oct = 1.0           # broad: the songs' own keys and arrangements are not "corrected"
+fmin_hz = 40.0
+fmax_hz = 16000.0
+min_songs = 3
+
+[glue]                     # mix-bus compression: slow attack (the hits pass), fairly fast release
+enabled = true
+target_gr_db = 1.2         # the threshold is found that gives this much gain reduction (average, while
+threshold_pct = 90.0       # playing); 0 = use threshold_pct as it is
+ratio = 1.8
+knee_db = 6.0
+attack_ms = 30.0
+release_ms = 150.0
+rms_ms = 20.0
+
+[buzz]                     # sympathetic snare buzz (wires/head resonating with bass, guitars, voice)
+enabled = true             # step 1: its fingerprint is learnt where it is alone (hi-hat/cymbal stems while
+stems = ["snare", "hihat", "cymbals", "toms"]  # kick and toms are silent), pooled over all songs;
+band_hz = [1200.0, 12000.0]                    # step 2: it is removed from these stems before their chains
+components = 2             # spectral templates for the buzz
+music_components = 12      # free templates for everything else in the stem
+exclusive = 0.6           # how strictly those cannot take the buzz's shape (0..1)
+strength = 1.0
+floor_db = -15.0           # at most this much removed at any point...
+stem_floor_db = { snare = -15.0, hihat = -6.0, cymbals = -9.0, toms = -15.0 }  # ...per stem, close to its own
+                           # hits (hats and cymbals share the buzz's band, so less is taken from them there)...
+stem_between_floor_db = { snare = -22.0, hihat = -18.0, cymbals = -15.0, toms = -20.0 }  # ...and between them,
+                           # where the stem holds only the buzz the voice and bass set off, and bleed
+own_hit_ms = { snare = 300.0, hihat = 500.0, cymbals = 1500.0, toms = 400.0 }  # "close" = this long after an own
+                           # hit (body peaks of snare/toms, attacks of hats/cymbals; crashes ring long)
+min_learn_s = 20.0         # seconds of buzz-only frames needed (over all songs) before removing anything
+protect_ms = 150.0         # snare/toms: nothing removed for this long after each of their own hits
+
+[character]                # stage 0: what kind of song it is (wall, ballad, build, dynamic, steady)
+enabled = true
+adapt = true               # adjust the mix stages to the song's style (the tables below)
+
+[character.styles.wall]    # loud, dense, steady: glue it, a little more weight, width and drum crush
+glue = { ratio = 2.0, target_gr_db = 1.8 }
+saturation = { mix = 0.3, chowtape = { drive = 0.7, saturation = 0.6 } }
+stereo = { width = 1.1 }
+drum_bus = { parallel = { mix = 0.25 } }
+
+[character.styles.ballad]  # sparse: keep its dynamics, the voice a little forward
+glue = { ratio = 1.5, target_gr_db = 0.6 }
+saturation = { mix = 0.12, chowtape = { input_gain_db = -3.0, saturation = 0.4 } }
+balance = { offsets = { vocals = 1.5 } }
+drum_bus = { compressor = { ratio = 1.5 }, parallel = { mix = 0.0 } }
+
+[character.styles.build]   # a crescendo: do not flatten the rise
+glue = { target_gr_db = 0.8, release_ms = 400.0 }
+limiter = { release_ms = 120.0 }
+
+[character.styles.dynamic] # verse/chorus contrast: keep it
+glue = { target_gr_db = 1.0 }
+drum_bus = { parallel = { mix = 0.1 } }
+
+[character.styles.steady]  # as the defaults
+glue = { target_gr_db = 1.2 }
+
+[drum_bus]                 # stage 4: the drum kit mixed as one instrument
+enabled = true
+stems = ["kick", "snare", "toms", "hihat", "cymbals"]
+eq = []                    # bus EQ bands (same types as the track EQ)
+compressor = { enabled = true, threshold_pct = 85.0, ratio = 2.0, knee_db = 6.0, attack_ms = 30.0, release_ms = 150.0, rms_ms = 10.0 }
+# parallel ("New York") compression: a crushed copy blended in under the kit; mix 0 = off (styles raise it)
+parallel = { enabled = true, mix = 0.0, threshold_pct = 40.0, ratio = 6.0, knee_db = 6.0, attack_ms = 5.0, release_ms = 80.0, rms_ms = 5.0, drive_db = 0.0 }
+# a shared room for the shells (the clean-up took theirs): weight, sustain, one kit instead of separate drums
+room = { enabled = true, stems = ["snare", "toms"], level_lu = -16.0, rt60_s = 0.7, predelay_ms = 6.0, damping = 0.6, hp_hz = 150.0, lp_hz = 9000.0 }
+saturation = { enabled = false, engine = "builtin", drive_db = 4.0, even = 0.5, mix = 0.2, chowtape = { path = "~/.vst3/CHOWTapeModel.vst3", level_db = -18.0, input_gain_db = 0.0, drive = 0.5, saturation = 0.5, bias = 0.8, speed_ips = 15.0, loss = true, oversampling = 4 } }
+
+[drum_bus.balance]         # the kit pieces against each other, consistent from song to song (as [balance]);
+                           # targets learnt from these songs (--learn-balance)
+enabled = true
+strength = 0.9
+max_change_db = 6.0
+ignore_below_db = 12.0
+drop_below_lu = -60.0
+offsets = { kick = 0.0, snare = 0.0, toms = 0.0, cymbals = 1.5, hihat = 0.0 }  # cymbals: the learnt target pulled them 2 dB down; full hits sounded low
+priors = {}                # (no published kit-piece levels: they depend on the engineer)
+prior_weight = 0.0
+groups = [
+  { name = "kick", stems = ["kick"], lu = -2.5 },
+  { name = "snare", stems = ["snare"], lu = 0.1 },
+  { name = "toms", stems = ["toms"], lu = -8.3 },
+  { name = "cymbals", stems = ["cymbals"], lu = -15.5 },   # learnt -16.5 (with the hi-hat), +1: they lost a little too much
+  { name = "hihat", stems = ["hihat"], lu = -16.0 },      # its own level: in the cymbals' group the balance pulled the hats
+                                                          # down with the cymbals (on Miramare 6 dB under them, -20 LU re the kit)
+]
+
+[balance]                  # keep the instruments at similar levels from song to song
+enabled = true             # (after each stem's chain, before the remix): each group is pulled towards its
+strength = 0.9             # target level relative to the remix; nearly fully, so levels match from song to song
+max_change_db = 6.0
+ignore_below_db = 12.0     # a group this far below its target is not that instrument, only bleed: left alone
+drop_below_lu = -40.0      # leftover stems in no group and this quiet (re the remix) are dropped
+# Targets: LU relative to the remix, matched as a pattern (groups relative to each other); the median of these songs (`rehearsal-master --learn-balance`
+# recomputes them from your reports, without outliers). A group's stems keep their internal balance.
+offsets = { vocals = 0.0, guitars = 0.0, bass = 0.0, drums = 0.0 }  # dB added to the targets (styles use it)
+# The learnt targets keep the rehearsal room's balance (the drums ~10 dB louder against the voice than
+# in mixes); they are blended with what engineers do (De Man 2017, §4.1.3: lead vocal ~ -3 LU re the
+# mix, drums -6.5..-8.5, bass -8..-9; no value for guitars) by prior_weight
+priors = { vocals = -3.0, bass = -8.5, drums = -7.5 }
+prior_weight = 0.3
+groups = [
+  { name = "vocals", stems = ["vocals", "backing_vocals", "vocal_room"], lu = -8.5 },
+  { name = "guitars", stems = ["guitar", "guitar_left", "guitar_right"], lu = -8.2 },
+  { name = "bass", stems = ["bass"], lu = -7.3 },
+  { name = "drums", stems = ["drum_bus", "drums"], lu = -3.1 },   # the kit, balanced inside its bus
+]
+
+[loudness]
+target_lufs = -14.0        # Spotify/YouTube level; -16 keeps more punch
+ceiling_dbtp = -1.0        # true-peak ceiling (leaves room for MP3 encoding)
+
+[clipper]                  # shaves drum transients before the limiter
+enabled = true
+headroom_db = 2.0          # clips above ceiling + headroom; the limiter does the last dB or two
+knee_db = 2.0
+oversample = 4
+
+[limiter]
+lookahead_ms = 2.0
+release_ms = 60.0
+oversample = 4
+
+[output]
+dir = "processed"          # relative to each input file's folder
+stages = "flac"            # every stage for listening, in <dir>/stages/<song>/: flac, wav, mp3 or off
+stems_dir = "processed/stems"  # separated stems cache, shared by all presets (relative to the input's folder)
+bit_depth = 24             # 16, 24 or 32 (float)
+mp3 = true
+mp3_bitrate = "320k"
+report = true              # PNG + JSON per song in <dir>/reports
+artist = ""
+album = "Rehearsal {date}"
+ab_segment_s = 10.0        # --ab: switch between original and processed every N seconds

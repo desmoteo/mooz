@@ -1,0 +1,37 @@
+[project]
+name = "rehearsal-master"
+version = "0.1.0"
+description = "Clean-up and mastering pipeline for stereo band rehearsal recordings"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.26",
+    "scipy>=1.11",
+    "soundfile>=0.12",
+    "matplotlib>=3.8",
+]
+
+[project.scripts]
+rehearsal-master = "rehearsal_master.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["rehearsal_master"]
+
+[dependency-groups]
+dev = ["pytest>=8"]
+# Stem separation (PyTorch + Demucs, ~3 GB). Installed by default; skip it with
+# `uv sync --no-group stems` and the pipeline falls back to whole-mix processing.
+stems = [
+    "audio-separator[cpu]>=0.47",
+    "audioread>=3.1.0",
+    "demucs>=4.0.1",
+    "torch>=2.7",
+]
+# Hosts VST3 plugins (Chowdhury DSP's tape model, [saturation] engine = "chowtape").
+plugins = ["pedalboard>=0.9"]
+
+[tool.uv]
+default-groups = ["dev", "stems", "plugins"]

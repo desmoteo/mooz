@@ -1,0 +1,13 @@
+/media/secure_storage/Personal/Circhi/experiments/prompt_sep/.venv-sam/lib/python3.11/site-packages/torch/cuda/__init__.py:65: FutureWarning: The pynvml package is deprecated. Please install nvidia-ml-py instead. If you did not install pynvml directly, please report this to the maintainers of the package that installed pynvml for you.
+  import pynvml  # type: ignore[import]
+/media/secure_storage/Personal/Circhi/experiments/prompt_sep/.venv-sam/lib/python3.11/site-packages/torch/nn/utils/weight_norm.py:144: FutureWarning: `torch.nn.utils.weight_norm` is deprecated in favor of `torch.nn.utils.parametrizations.weight_norm`.
+  WeightNorm.apply(module, name, dim)
+Loading weights:   0%|          | 0/99 [00:00<?, ?it/s]Loading weights: 100%|██████████| 99/99 [00:00<00:00, 15480.60it/s]
+loaded sam-audio-large in 22s, GPU 6.0 GiB
+260928_225412_TrLR Abitudine Strato@190-230s: 40s
+  1 vocals     'vocals'  50s
+  1 bass       'bass guitar'  49s
+  1 guitars    'electric guitar'  49s
+  1 drums      'drums'  49s
+  1 other      'harmonica'  49s
+done in 269s, peak GPU 7.0 GiB

@@ -1,0 +1,3 @@
+Installed 15 packages in 8ms
+Hint: The `hf-cli` skill is not installed. Run `hf skills add -g` to teach your AI agents how to use the `hf` CLI.
+path=/media/secure_storage/Personal/Circhi/experiments/prompt_sep/hf_cache/models--facebook--sam-audio-base/snapshots/81f64008f9f957c2b57a45923fb5299c66e9d186
