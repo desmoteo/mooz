@@ -115,6 +115,50 @@ instrument is the median over all songs with cached stems, so the corrections pu
 towards how that instrument usually sounds in this band. The profiles are written to
 `character.json` and the report JSON.
 
+### Close tracks ([takes.py](../rehearsal_master/takes.py), [multitrack.py](../rehearsal_master/multitrack.py))
+
+A take may hold more than the room. On a Zoom with inputs: `TrMic`, the built-in stereo mic;
+`Tr<n>`, each input; and `TrLR`, the recorder's own mix-down, measured as exactly 1.413 `TrMic` +
+1.000 `Tr2` (residual −149 dB, all 8 takes of 5 November 2026). So the room is `TrMic`: separating
+`TrLR` would put the close track in every room stem, and then in the mix twice. Without a `TrMic`,
+`TrLR` is the stereo pair itself.
+
+```mermaid
+flowchart LR
+    MIC["TrMic<br/>room"] --> R["ensemble plan:<br/>every stem"]
+    T2["Tr&lt;n&gt;<br/>close, mono"] --> C["close plan:<br/>vocals · bass · guitar · (drums, other)"]
+    C --> G{"within 15 LU of<br/>the track's loudest?"}
+    G -- no --> X["bleed: left out"]
+    G -- yes --> AL["delay and polarity to the<br/>same instrument's room stem"]
+    R --> AL
+    AL --> M["merged stem:<br/>room + close at close_share"]
+    R -- "the other stems" --> M2["room's stem, as it is"]
+    M & M2 --> CH["profiles · chains · balance"]
+    MIC --> ORIG["the original under the mix"]
+```
+
+- **What a track holds**: the band's `Tr2` is a mixer feed: voice −1, bass −4, a mid-range
+  instrument in `other` (about 15 % of the take) −7, guitar −23, drums −25 LU against the track.
+  A stem more than `min_level_lu` under its track's loudest is bleed. When several tracks hold an
+  instrument, those within `keep_within_db` of where it stands strongest stay, so two guitars on two
+  inputs are both used, and a vocal mic's bleed of the bass amp is not. A mono track cannot be
+  split by position, so two guitars on one feed are one stem.
+- **Lining up**: the room hears a feed through an amp or a PA, several metres later and sometimes
+  the other way up. Phase-only cross-correlation of the two stems over the whole take gives the delay and
+  polarity, in the band where the instrument is (`align_band_hz`), and the windows where the
+  stem plays say how steady that is. On Miramare the voice is 10.02 ms later and inverted (steady in 100 %
+  of the windows), the bass 11.02 ms later (83 %). Lined up, they add +0.2 to +1.9 dB over
+  their summed powers from 200 Hz to 800 Hz and from 1.6 to 6.4 kHz. Without the polarity the voice would lose up to 1.8 dB. No clear
+  peak (`min_peak`): no shift, since an unrelated signal has nothing to cancel.
+- **One stem**: the close stem is set against the room's by loudness, `close_share` of the two
+  parts, and added to it before the chain: one chain and one fader per instrument, and everything after
+  it works as on any stem. The vocal's room is turned down first, as ever. The merged stems have a cache of their
+  own, one folder per set of merge settings, so that tone targets are medians of stems like this one.
+- **The original** under the mix remains the room alone, and the balance's estimate of the
+  original's share of a group uses the room's stems, not the merged ones.
+- **Order**: all the takes are separated and merged before the first is processed, so each one's tone
+  targets are the same whatever the order.
+
 ### Stage 1: raw stems ([separate.py](../rehearsal_master/separate.py))
 
 The *roformer* backend runs one of two **plans** (`stems.plan`), chains of models run
@@ -587,6 +631,8 @@ flowchart LR
 ```
 
 Presets:
+- **simple_bass**: the same mix with the bass on expander, EQ with tone match, compressor,
+  fundamental restore and kick duck only, to compare with the full chain.
 - **albini**: Steve Albini's approach. The room and its dynamics kept; no bus compression
   or clipper, no transient shaping, no samples, no added reverb or fader riding; dry loud
   guitars, compressed raw vocals, tape; −18 LUFS.
@@ -634,12 +680,17 @@ processed/<preset dir>/
   reports/<song>.png / _tracks.png  mix stages / per-stem stages (spectra, EQ, gain traces)
   reports/<song>.json               every measurement and decision
   stages/<song>/                    character.json, 1_raw → cache, 2_stems/, 3_drum_cleanup/,
-                                    2_stems/samples/ (the drum samples), 4_drum_bus, 5_mix
+                                    2_stems/samples/ (the drum samples), 4_drum_bus, 5_premix/
+                                    (every part as it goes into the mix: they add up to it), 5_mix
+                                    (with close tracks also 1_raw_Tr<n> and 1_merged, links)
                                     (FLAC, all −12 dB so nothing clips)
 processed/<preset dir>/.work/<song>/  this run's intermediate files, removed when it ends
 processed/stems/<song>/             separation cache (whole recording, float WAV), _profile.json,
                                     _split_*.wav (pan split, when on)
 processed/stems/_buzz/              buzz library (one file per song)
+processed/stems_close/<take> Tr<n>/ a close track's stems (plan "close")
+processed/stems_ensemble_merged/<settings>/<take>/  the stems with the close tracks in them, _profile.json,
+                                    _merge.json (what was found and done), _room_vocals.wav
 ```
 
 ## 7. Modules
@@ -651,6 +702,8 @@ processed/stems/_buzz/              buzz library (one file per song)
 | `pipeline.py` | the stage order; drum bus; the original blend and the balance in it; master loop |
 | `character.py` | stage 0 metrics and style |
 | `profile.py` | stage 0 stem profiles, cross-song targets, tone match |
+| `takes.py` | what was recorded: which files make a take, its room and close tracks, the recorder's mix-down |
+| `multitrack.py` | close stems: which count, delay and polarity to the room, merged stems |
 | `separate.py` | separation backends, chained steps, cache, pan split |
 | `cleanup.py` | hum, bleed reduction (optional), buzz learning/removal, group balance |
 | `effects.py` | per-track effects; clean-up / studio / mix chain parts |
@@ -673,7 +726,7 @@ model's kept outputs); stem profiles about 15 s the first time (cached); process
 
 ## 9. Tests
 
-`uv run pytest` (66 checks): K-weighting and loudness of a reference sine, compressor
+`uv run pytest` (80 checks): K-weighting and loudness of a reference sine, compressor
 release, exact band reconstruction, limiter ceiling, mono bass, FIR accuracy, every effect on
 synthetic signals (de-esser, resonances, transients, bass enhancer, saturator, gates, ducks),
 pan split (and that it runs outside the separation cache), chunked separation, hum, expander
@@ -690,6 +743,8 @@ delay, dual bass chain (exact when off, mono lows, driven and wider highs). Two 
 the models (default and albini: finite audio, loudness target, true-peak ceiling, reports and
 stage files, and the null test: every processor off, the master is the recording to within
 −60 dB); `test_config.py` the layers' precedence and track inheritance;
+`test_multitrack.py` what makes a take, delay and polarity, what counts as bleed, a whole take
+with a close track, and that the `5_premix` parts add up to the mix;
 `test_separation_glue.py` the audio-separator internals that `separate.py` patches, which is
 why that library is pinned.
 

@@ -1,0 +1,18 @@
+# The same mix with a much shorter chain on the bass, to compare with the full one. On the close
+# track the bass is far cleaner than the room's, and most of the full chain was built to repair the
+# room's: the harmonic clean-up exists because the exciter and transient shaper raised what lay
+# between the harmonics of a noisy stem, and three stages add harmonics.
+#
+# Kept:    expander, EQ with tone match, compressor, fundamental restore, kick duck.
+# Dropped: harmonic clean-up, resonance suppressor, transient shaper, saturator, exciter, bass enhancer.
+
+[output]
+dir = "processed/simple_bass"
+
+[tracks.bass]
+harmonic_clean = { enabled = false }
+resonance = { enabled = false }
+transient = { enabled = false }
+saturator = { enabled = false }
+exciter = { enabled = false }
+bass_enhancer = { enabled = false }

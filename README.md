@@ -9,9 +9,11 @@ going (a simpler chain; not implemented yet): [docs/PLAN.md](docs/PLAN.md).
 ## Usage
 
 ```sh
-uv run rehearsal-master                       # every WAV in this folder -> processed/
-uv run rehearsal-master "260928_224856_TrLR Miramare.WAV"
-uv run rehearsal-master ~/rehearsals/2026-10-05      # a whole folder
+uv run rehearsal-master                       # the recordings in rehearsal.toml's [input], with its [input] presets
+uv run rehearsal-master "260928_224856_TrLR Miramare.WAV"   # one recording (or a whole take: any of its files)
+uv run rehearsal-master ~/rehearsals/2026-10-05      # a whole folder, with its take folders
+uv run rehearsal-master --preset simple_bass  # the shorter bass chain -> processed/simple_bass/
+uv run rehearsal-master --separate-only       # only separate every track into the cache
 uv run rehearsal-master --ab                  # also write loudness-matched A/B files
 uv run rehearsal-master --preset albini       # Steve Albini-style mix -> processed/albini/
 uv run rehearsal-master --preset indie        # gritty indie / garage rock -> processed/indie/
@@ -42,14 +44,35 @@ uv run --with remotezip --with requests python tools/build_drum_samples.py
 The first run of a song separates it (about 6–7 min on the GPU, cached afterwards); processing
 takes about 4 min per song. The run is memory-capped (`REHEARSAL_MEMORY_MAX`, default 4G).
 
+## Recordings
+
+A take is every file from one moment. Zoom recorders write one per track,
+`<YYMMDD>_<HHMMSS>_Tr<id>.WAV`, optionally in a folder per take named after the song
+(`261105_225442 Miramare/`); two takes of a song keep their own names. A plain run works on
+`[input] paths` in `rehearsal.toml`, now `new_tracks/drive-download-20261107T141948Z-1-001`.
+
+| track | what it is | used for |
+|---|---|---|
+| `TrMic` | the built-in stereo microphone: the room | every stem, and the original under the mix |
+| `Tr<n>` | input *n*: an external mic or a mixer: a close track | voice, bass and guitar, where it really holds them |
+| `TrLR` | next to a `TrMic`, the recorder's own mix-down (measured: 1.413 `TrMic` + 1.000 `Tr2`, residual −149 dB); without one, the stereo pair itself | the A side of the A/B files; the room track only if there is no `TrMic` (or `[multitrack] room = "TrLR"`: the close track is then in it twice) |
+
+Each close stem is lined up with the same instrument's room stem (delay and polarity, measured)
+and added to it before its chain, so one chain and one fader serve each instrument. A stem more
+than 15 LU under its track's loudest is bleed and stays out. A mono track holds one guitar stem:
+two guitars on one mixer feed cannot be told apart, on two inputs both are used. Recordings with
+a single file work as before.
+
+Outputs and caches go in `processed/` next to the takes' folders.
+
 ## Outputs
 
-In `processed/` (or the preset's folder), for every song:
+In `processed/full/` and `processed/simple_bass/` (or the preset's folder), for every take:
 
 | file | what |
 |---|---|
 | `<name>.wav` / `.mp3` | the master: 24-bit WAV and a 320 kbps MP3 tagged with title and date |
-| `<name>_AB.wav` / `.mp3` | with `--ab`: original ↔ master every 10 s (original first), at the same loudness |
+| `<name>_AB.wav` / `.mp3` | with `--ab`: original ↔ master every 10 s (original first: the recorder's mix-down if it wrote one), at the same loudness |
 | `reports/<name>.png` | the mix stages: spectrum before/after, EQ, loudness over time, gain reduction |
 | `reports/<name>_tracks.png` | every stem: level in the remix, spectrum, EQ, its dynamics over time |
 | `reports/<name>.json` | every measurement and decision |
@@ -57,9 +80,12 @@ In `processed/` (or the preset's folder), for every song:
 | &nbsp;&nbsp;`character.json` | 0 · what kind of song it is (wall, ballad, build, dynamic, steady) and why, and every stem's profile |
 | &nbsp;&nbsp;`1_raw/` | 1 · the separated stems, untouched (link to the cache) |
 | &nbsp;&nbsp;`1_raw/models/` | 1 · every separation model's own outputs before they are averaged (`<step>_<input>/<model>/<stem>.flac`, 12 dB down, listed in `index.json`), and each average (`ensemble/`) |
+| &nbsp;&nbsp;`1_raw_Tr<n>/` | 1 · a close track's separated stems (link to its cache) |
+| &nbsp;&nbsp;`1_merged/` | 1 · what the chains start from: the room's stems with the close stems lined up and added (link) |
 | &nbsp;&nbsp;`2_stems/` | 2 · every stem cleaned and studio-processed; `samples/`: the drum samples made from the song |
 | &nbsp;&nbsp;`3_drum_cleanup/` | 3 · drum stems after the buzz/bleed clean-up, and `*_removed`: what it took out |
 | &nbsp;&nbsp;`4_drum_bus` | 4 · the drum kit mixed as one instrument |
+| &nbsp;&nbsp;`5_premix/` | 5 · every part as it goes into the mix, balanced and placed, the original too: they add up to the mix before the bus chain, to remix or listen to in a DAW |
 | &nbsp;&nbsp;`5_mix` | 5 · the full mix before loudness and limiting |
 
 ## How it works, in short
@@ -97,6 +123,10 @@ In `processed/` (or the preset's folder), for every song:
    bus EQ and compression, tape (CHOW Tape Model), loudness target, true-peak limiter.
 
 ## Presets
+
+- **simple_bass**: the same mix with a much shorter bass chain, to compare with the full one:
+  expander, EQ with tone match, compressor, fundamental restore and kick duck; no harmonic
+  clean-up, resonance suppressor, transient shaper, saturator, exciter or enhancer.
 
 - **albini**: Steve Albini's approach: the band in a room, as it played. The rehearsal room's
   defects are still fixed (hum, buzz, levels); the polish is dropped: no bus compression or
@@ -138,6 +168,8 @@ Put changes in `rehearsal.toml` (only the keys you change; every option is expla
 
 | it sounds… | try |
 |---|---|
+| voice / bass too dry and upfront, or too roomy | `[multitrack] close_share = { vocals = 0.6, bass = 0.5, guitar = 0.7, other = 0.6 }` (less of the close track; more: 0.9) |
+| an instrument on the close track left out, or bleed let in | see `[multitrack]`: `min_level_lu` (default −15), `stems` (add `"other"`) |
 | too much of the room recording / too processed | `[mix] original_share = 0.15` (drier, the stems in front) .. `0.35` (closer to the recording; 0 = stems only) |
 | muddy / boxy | `eq.strength = 0.9` |
 | too bright / not warm enough | `eq.tilt_db_per_oct = -2.3`; more guitar saturation `[tracks.guitar] saturator = { mix = 0.5 }` |
@@ -200,6 +232,6 @@ Background reading, with how this pipeline compares: [docs/RESEARCH.md](docs/RES
 ## Development
 
 ```sh
-uv run pytest          # 66 checks, about a minute: DSP, settings, the pipeline end to end, the separation library's internals
+uv run pytest          # 80 checks, about 90 s: DSP, settings, takes and close tracks, the pipeline end to end, the separation library's internals
 uv run --with remotezip --with requests python tools/build_raw_references.py   # rebuild the raw-track references
 ```

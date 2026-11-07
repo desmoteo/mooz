@@ -17,7 +17,7 @@ import numpy as np
 import soundfile as sf
 from scipy import signal
 
-from . import character, cleanup, config, dynamics, effects, eq, export, loudness, profile, separate, space, stages, stereo, trim
+from . import character, cleanup, config, dynamics, effects, eq, export, loudness, multitrack, profile, separate, space, stages, stereo, takes, trim
 
 
 def _finalize(x: np.ndarray, fs: int, cfg: dict) -> tuple[np.ndarray, np.ndarray, dict]:
@@ -221,14 +221,16 @@ def _balance(out: np.ndarray, original: np.ndarray, g_orig: float, processed_fil
 
 def _tracks(y: np.ndarray, fs: int, cfg: dict, stems: dict[str, Path] | None, start: int, end: int,
             work: Path, stems_dir: Path, details: dict, stage: stages.StageWriter, profiles: dict | None = None,
-            targets: dict | None = None, tempo_bpm: float | None = None) -> tuple[np.ndarray, dict]:
+            targets: dict | None = None, tempo_bpm: float | None = None,
+            room_stems: dict[str, Path] | None = None) -> tuple[np.ndarray, dict]:
     """Stages 1-5 for the stems: (3) drum clean-up, (2) studio processing of every
     stem, (4) the drum bus, (5) the sum with the original recording under it and the
     level balance. Without stems the "mix" chain runs on y. work: this run's folder for
     intermediate files; stems_dir: the song's separation cache (the buzz library sits next
     to it). details collects per-track data for the tracks report; stage writes each
     stage for listening. profiles: each stem's stage-0 profile; targets: each
-    instrument's median profile."""
+    instrument's median profile. room_stems: what y itself is made of, where stems also hold
+    close tracks (multitrack.py); by default the stems."""
     profiles, targets = profiles or {}, targets or {}
     mix_lufs = loudness.integrated(y, fs)
     if stems is None:
@@ -247,6 +249,8 @@ def _tracks(y: np.ndarray, fs: int, cfg: dict, stems: dict[str, Path] | None, st
             sf.write(stems[n], a, fs, subtype="FLOAT")
         del refined
         read = lambda f: sf.read(f, dtype="float64", always_2d=True)[0]  # noqa: E731  (already trimmed)
+        room_stems = None
+    room_of = lambda n: (room_stems or {}).get(n, stems[n])  # noqa: E731
     original = y.copy()  # the recording as prepared: blended under the processed stems in stage 5
     total = float(np.mean(y**2)) + 1e-20
     stats, processed_files, stem_lufs = {}, {}, {}
@@ -275,7 +279,7 @@ def _tracks(y: np.ndarray, fs: int, cfg: dict, stems: dict[str, Path] | None, st
     kit_gr = None  # the kit gate's gain reduction (dB per sample), open when any gated stem is open
     for name in sorted(stems, key=lambda n: n not in sources.values()):
         raw = read(stems[name])
-        y -= raw
+        y -= read(room_of(name))
         tcfg = cfg["tracks"].get(name, cfg["track_defaults"])
         if not np.isfinite(loudness.integrated(raw, fs)):
             # nothing in it (below the loudness gate everywhere), e.g. no "other" instrument in this
@@ -380,37 +384,134 @@ def _tracks(y: np.ndarray, fs: int, cfg: dict, stems: dict[str, Path] | None, st
     bcfg = cfg["balance"]
     gains: dict[str, float | None] = {}
     if bcfg["enabled"]:
-        raw_of = lambda n: sum(read(stems[m]) for m in (kit_members if n == "drum_bus" else [n]))  # noqa: E731
+        raw_of = lambda n: sum(read(room_of(m)) for m in (kit_members if n == "drum_bus" else [n]))  # noqa: E731
         gains, stats["balance"] = _balance(out, original, g_orig, processed_files, raw_of, stem_lufs, fs, bcfg)
         for name, g in gains.items():
             if g != 0.0:
                 (stats["drum_bus"] if name == "drum_bus" else stats[name])["balance_gain_db"] = (
                     "dropped" if g is None else round(g, 1))
     out += original
-    del original
     rd = cfg["rider"]
     voc = [n for n in rd["stems"] if n in processed_files]
+    ridden = None
     if rd["enabled"] and voc:
         g_of = lambda n: gains.get(n) or 0.0  # noqa: E731
         v = sum(sf.read(processed_files[n], dtype="float64", always_2d=True)[0] * 10 ** (g_of(n) / 20) for n in voc)
+        before = out
         out, stats["rider"] = _ride(out, v, fs, rd)
-        del v
+        ridden = out - before
+        del v, before
+    if stage:  # every part of the mix as it goes in: they add up to the mix before the bus chain
+        stage.write("5_premix/original", original, fs)
+        for name, f in processed_files.items():
+            if gains.get(name, 0.0) is None:
+                continue
+            part = sf.read(f, dtype="float64", always_2d=True)[0] * 10 ** ((gains.get(name) or 0.0) / 20)
+            if ridden is not None and name == voc[0]:
+                part += ridden
+            stage.write(f"5_premix/{name}", part, fs)
+            del part
+    del original, ridden
     stats["remix"] = {"mix_lufs": round(mix_lufs, 1), "unbalanced_lufs": round(unbalanced, 1),
                       "remix_lufs": round(loudness.integrated(out, fs), 1)}
     return out, stats
 
 
-def process_file(path: Path, cfg: dict, *, analyze_only: bool = False, ab: bool = False) -> dict:
-    """One recording through the whole chain; returns the report. cfg: from config.for_file()."""
+def _bounds(x: np.ndarray, fs: int, lufs: float, tcfg: dict) -> tuple[int, int]:
+    """The part of the recording to keep (samples): found, or set by [trim] start_s / end_s."""
+    start, end = 0, len(x)
+    if tcfg["enabled"]:
+        start, end = trim.find_bounds(x, fs, lufs, tcfg["threshold_rel_db"], tcfg["min_active_s"],
+                                      tcfg["pre_roll_s"], tcfg["post_roll_s"])
+    if tcfg["start_s"] >= 0:
+        start = int(tcfg["start_s"] * fs)
+    if tcfg["end_s"] >= 0:
+        end = min(len(x), int(tcfg["end_s"] * fs))
+    if end <= start:
+        raise ValueError(f"trim: nothing left between {start / fs:.2f}s and {end / fs:.2f}s")
+    return start, end
+
+
+def _condition(x: np.ndarray, fs: int, start: int, cfg: dict) -> tuple[np.ndarray, dict | None]:
+    """Rumble filter and mains hum, on the whole recording: that is also what gets separated (so
+    changing the trim never needs a new separation). Returns the track and what hum was found."""
+    full = x
+    if cfg["highpass"]["enabled"]:
+        hp = cfg["highpass"]
+        full = signal.sosfilt(signal.butter(hp["order"], hp["freq_hz"], "high", fs=fs, output="sos"), full, axis=0)
+    hum = None
+    if cfg["hum"]["enabled"]:
+        lead_in = (int(0.5 * fs), start - int(0.2 * fs)) if start > int(2.2 * fs) else None  # skip the button click
+        hum = cleanup.detect_hum(full, fs, cfg["hum"], lead_in)
+        if hum["harmonics"]:
+            full = cleanup.remove_hum(full, fs, hum, cfg["hum"])
+    return full, hum
+
+
+def _cached_stems(path: Path, full: np.ndarray, fs: int, scfg: dict, cfg: dict, cache: Path) -> dict[str, Path]:
+    """The stems of one track, from the separation cache if they are for the same file, filters
+    and models."""
+    st_ = path.stat()
+    key = {"file": path.name, "size": st_.st_size, "mtime": st_.st_mtime, "whole_file": True,
+           "highpass": cfg["highpass"], "hum": cfg["hum"],
+           "stems": {k: scfg[k] for k in ("backend", "model", "shifts", "overlap")}
+           | {"steps": separate.model_steps(scfg)}}
+    return separate.separate(full, fs, scfg, cache, key)
+
+
+def _close_cfg(cfg: dict) -> dict:
+    return cfg["stems"] | {"plan": cfg["multitrack"]["plan"], "backend": "roformer"}
+
+
+def separate_close(take: takes.Take, start: int, fs: int, cfg: dict) -> dict[str, dict[str, Path]]:
+    """Each close track's stems, conditioned as the room track was: {"Tr2": {"vocals": file, ...}}."""
+    out = {}
+    scfg = _close_cfg(cfg)
+    for name, path in take.close.items():
+        x, fs_x = sf.read(path, dtype="float64", always_2d=True)
+        if fs_x != fs:
+            raise ValueError(f"{path.name}: {fs_x} Hz, but the room track is at {fs} Hz")
+        full, _ = _condition(x, fs, start, cfg)
+        cache = take.root / (cfg["output"]["stems_dir"] + separate.cache_name(scfg)) / f"{take.name} {name}"
+        out[name] = _cached_stems(path, full, fs, scfg, cfg, cache)
+    return out
+
+
+def separate_take(take: takes.Take, cfg: dict) -> None:
+    """Every track of a take separated into the cache, nothing else (--separate-only)."""
+    scfg = cfg["stems"]
+    x, fs = sf.read(take.room, dtype="float64", always_2d=True)
+    x = x[:, :2]
+    start, _ = _bounds(x, fs, loudness.integrated(x, fs), cfg["trim"])
+    full, _ = _condition(x, fs, start, cfg)
+    del x
+    room = _cached_stems(take.room, full, fs, scfg, cfg, take.root / (cfg["output"]["stems_dir"] + separate.cache_name(scfg)) / take.name)
+    del full
+    if take.close:
+        _merged(take, room, start, fs, cfg)
+
+
+def _merged(take: takes.Take, room: dict[str, Path], start: int, fs: int, cfg: dict
+            ) -> tuple[dict[str, Path], dict[str, Path], Path, dict]:
+    """The take's stems with its close tracks in them (multitrack.py), separating them if needed."""
+    close = separate_close(take, start, fs, cfg)
+    root = take.root / (cfg["output"]["stems_dir"] + separate.cache_name(cfg["stems"]) + "_merged")
+    return multitrack.merge(take, room, close, fs, cfg, root)
+
+
+def process_file(path: Path | takes.Take, cfg: dict, *, analyze_only: bool = False, ab: bool = False) -> dict:
+    """One take (or one file, a take of its own) through the whole chain; returns the report.
+    cfg: from config.for_file()."""
+    take = path if isinstance(path, takes.Take) else takes.single(Path(path))
     if analyze_only:
-        return _process(path, cfg, None, True, ab)
+        return _process(take, cfg, None, True, ab)
     # this run's intermediate files live under the output folder (the preset's), never in the
     # shared stems cache, so two presets can run on one song at the same time
-    work = path.parent / cfg["output"]["dir"] / ".work" / path.stem
+    work = take.root / cfg["output"]["dir"] / ".work" / take.name
     shutil.rmtree(work, ignore_errors=True)
     work.mkdir(parents=True)
     try:
-        return _process(path, cfg, work, False, ab)
+        return _process(take, cfg, work, False, ab)
     finally:
         shutil.rmtree(work, ignore_errors=True)
         try:
@@ -419,13 +520,14 @@ def process_file(path: Path, cfg: dict, *, analyze_only: bool = False, ab: bool 
             pass
 
 
-def _process(path: Path, cfg: dict, work: Path | None, analyze_only: bool, ab: bool) -> dict:
+def _process(take: takes.Take, cfg: dict, work: Path | None, analyze_only: bool, ab: bool) -> dict:
+    path = take.room
     x, fs = sf.read(path, dtype="float64", always_2d=True)
     if x.shape[1] > 2:
         print(f"  note: {x.shape[1]} channels, using the first two", file=sys.stderr)
         x = x[:, :2]
     stereo_in = x.shape[1] == 2
-    title, date = export.song_info(path)
+    title, date = take.title, take.date
     rep: dict = {"file": path.name, "title": title, "date": date, "sample_rate": fs, "channels": x.shape[1],
                  "duration_s": round(len(x) / fs, 2)}
     curves: dict = {}
@@ -435,35 +537,18 @@ def _process(path: Path, cfg: dict, work: Path | None, analyze_only: bool, ab: b
 
     # Trim
     tcfg = cfg["trim"]
-    start, end = 0, len(x)
-    if tcfg["enabled"]:
-        start, end = trim.find_bounds(x, fs, before["integrated_lufs"], tcfg["threshold_rel_db"],
-                                      tcfg["min_active_s"], tcfg["pre_roll_s"], tcfg["post_roll_s"])
-    if tcfg["start_s"] >= 0:
-        start = int(tcfg["start_s"] * fs)
-    if tcfg["end_s"] >= 0:
-        end = min(len(x), int(tcfg["end_s"] * fs))
-    if end <= start:
-        raise ValueError(f"trim: nothing left between {start / fs:.2f}s and {end / fs:.2f}s")
+    start, end = _bounds(x, fs, before["integrated_lufs"], tcfg)
     rep["trim"] = {"start_s": round(start / fs, 2), "end_s": round(end / fs, 2)}
     grid = eq.log_grid(fs)
     spec_before = eq.band_spectrum(x[start:end], fs, grid)
 
-    # Rumble filter and mains hum, on the whole recording: that is also what gets separated
-    # (so changing the trim never needs a new separation)
-    full = x
-    if cfg["highpass"]["enabled"]:
-        hp = cfg["highpass"]
-        full = signal.sosfilt(signal.butter(hp["order"], hp["freq_hz"], "high", fs=fs, output="sos"), full, axis=0)
-    if cfg["hum"]["enabled"]:
-        lead_in = (int(0.5 * fs), start - int(0.2 * fs)) if start > int(2.2 * fs) else None  # skip the button click
-        rep["hum"] = cleanup.detect_hum(full, fs, cfg["hum"], lead_in)
-        if rep["hum"]["harmonics"]:
-            full = cleanup.remove_hum(full, fs, rep["hum"], cfg["hum"])
+    full, hum = _condition(x, fs, start, cfg)
+    if hum is not None:
+        rep["hum"] = hum
     del x
     y = full[start:end].copy()
 
-    out_dir = path.parent / cfg["output"]["dir"]
+    out_dir = take.root / cfg["output"]["dir"]
     details: dict = {}
     # The tonal-balance EQ corrects the room and recorder, so by default it is
     # measured on the recording itself: deliberate per-track moves (kick boost,
@@ -473,18 +558,20 @@ def _process(path: Path, cfg: dict, work: Path | None, analyze_only: bool, ab: b
     scfg = cfg["stems"]
     if not analyze_only and scfg["enabled"]:
         if separate.available(scfg["backend"]):
-            st_ = path.stat()
-            key = {"file": path.name, "size": st_.st_size, "mtime": st_.st_mtime, "whole_file": True,
-                   "highpass": cfg["highpass"], "hum": cfg["hum"],
-                   "stems": {k: scfg[k] for k in ("backend", "model", "shifts", "overlap")}
-                   | {"steps": separate.model_steps(scfg)}}
-            stems = separate.separate(full, fs, scfg, path.parent / (cfg["output"]["stems_dir"] + separate.cache_name(scfg))
-                                      / path.stem, key)
+            stems = _cached_stems(path, full, fs, scfg, cfg, take.root / (cfg["output"]["stems_dir"] + separate.cache_name(scfg)) / take.name)
         else:
             print("  note: stem separation not installed (uv sync --group stems); processing the whole mix",
                   file=sys.stderr)
     del full
-    stems_dir = path.parent / (cfg["output"]["stems_dir"] + separate.cache_name(scfg)) / path.stem  # one per plan
+    stems_dir = take.root / (cfg["output"]["stems_dir"] + separate.cache_name(scfg)) / take.name  # one per plan
+    raw_dir, close_dirs, room_stems = stems_dir, {}, None
+    if stems and take.close:  # the close tracks into the room's stems, before anything looks at them
+        stems, room_stems, stems_dir, rep["multitrack"] = _merged(take, stems, start, fs, cfg)
+        close_cache = take.root / (cfg["output"]["stems_dir"] + separate.cache_name(_close_cfg(cfg)))
+        close_dirs = {tr: close_cache / f"{take.name} {tr}" for tr in take.close}
+        rep["multitrack"]["room_track"] = take.room.name
+        if take.mixdown is not None:
+            rep["multitrack"]["recorder_mixdown"] = takes.mixdown_formula(take)
     profiles, targets = {}, {}
     if stems:
         # Stage 0, per stem: every raw stem profiled before any clean-up; the medians over
@@ -508,7 +595,7 @@ def _process(path: Path, cfg: dict, work: Path | None, analyze_only: bool, ab: b
                     d["vocals"] = d["vocals_full"]
         profiles = prof["stems"]
         rep["stem_profiles"] = {n: profile.summary(p) for n, p in profiles.items() if n in stems}
-    stage = stages.StageWriter(out_dir / "stages" / path.stem if not analyze_only else None, cfg["output"]["stages"])
+    stage = stages.StageWriter(out_dir / "stages" / take.name if not analyze_only else None, cfg["output"]["stages"])
     # Stage 0: what kind of song this is; the mix stages adapt to its style
     ccfg = cfg["character"]
     if ccfg["enabled"]:
@@ -520,13 +607,17 @@ def _process(path: Path, cfg: dict, work: Path | None, analyze_only: bool, ab: b
         del raw, trig
         style = rep["character"]["style"]
         if ccfg["adapt"] and style in ccfg["styles"]:  # the style's table, under the song's own settings
-            cfg = config.for_file(cfg, path.name, style)
+            cfg = config.for_file(cfg, take.name, style)
         stage.json("character", rep["character"] | {"stems": rep.get("stem_profiles", {})})
     if stems:
-        stage.link_raw(stems_dir)
+        stage.link_raw(raw_dir)
+        for tr, d in close_dirs.items():
+            stage.link_raw(d, f"1_raw_{tr}")
+        if close_dirs:
+            stage.link_raw(stems_dir, "1_merged")
     if not analyze_only:
         y, rep["tracks"] = _tracks(y, fs, cfg, stems, start, end, work, stems_dir, details, stage, profiles, targets,
-                                   rep.get("character", {}).get("tempo_bpm"))
+                                   rep.get("character", {}).get("tempo_bpm"), room_stems)
 
     # Stereo
     if cfg["stereo"]["enabled"] and stereo_in:
@@ -576,7 +667,7 @@ def _process(path: Path, cfg: dict, work: Path | None, analyze_only: bool, ab: b
         curves["glue"] = dynamics.decimate(gr, fs)
 
     if cfg["consistency"]["enabled"]:
-        y, rep["consistency"] = _consistency(y, fs, cfg, out_dir, path.stem)
+        y, rep["consistency"] = _consistency(y, fs, cfg, out_dir, take.name)
     stage.write("5_mix", y, fs)  # stage 5, before loudness and limiting
 
     # Loudness, clipper, limiter, fades
@@ -590,27 +681,33 @@ def _process(path: Path, cfg: dict, work: Path | None, analyze_only: bool, ab: b
     # Outputs
     ocfg = cfg["output"]
     out_dir.mkdir(parents=True, exist_ok=True)
-    wav = out_dir / f"{path.stem}.wav"
+    wav = out_dir / f"{take.name}.wav"
     export.write_wav(wav, y, fs, ocfg["bit_depth"])
     rep["outputs"] = {"wav": str(wav)}
     if stage:
-        stage.readme(path.stem, {"style": rep.get("character", {}).get("style"), "files": stage.written})
+        stage.readme(take.name, {"style": rep.get("character", {}).get("style"), "files": stage.written})
         rep["outputs"]["stages"] = str(stage.root)
     tags = {"title": title, "artist": ocfg["artist"], "album": ocfg["album"].format(date=date or "").strip(),
             "date": date[:4]}
     if ocfg["mp3"]:
-        mp3 = out_dir / f"{path.stem}.mp3"
+        mp3 = out_dir / f"{take.name}.mp3"
         if export.write_mp3(wav, mp3, ocfg["mp3_bitrate"], tags):
             rep["outputs"]["mp3"] = str(mp3)
         else:
             print("  note: ffmpeg not found, skipping MP3", file=sys.stderr)
     if ab:
         # Level both versions so the original's peaks still fit under the ceiling.
-        level = min(after["integrated_lufs"], cfg["loudness"]["ceiling_dbtp"] - before["plr_db"])
-        raw = sf.read(path, dtype="float64", always_2d=True, start=start, stop=end)[0][:, : y.shape[1]]
-        mix = export.ab_mix(raw, y, fs, level - before["integrated_lufs"], level - after["integrated_lufs"],
+        # against what the recorder itself made of the take: its mix-down if it wrote one, else the recording
+        ref = before
+        ab_src = path
+        if take.mixdown is not None:
+            ab_src = take.mixdown
+            ref = loudness.summary(sf.read(ab_src, dtype="float64", always_2d=True)[0], fs)[0]
+        level = min(after["integrated_lufs"], cfg["loudness"]["ceiling_dbtp"] - ref["plr_db"])
+        raw = sf.read(ab_src, dtype="float64", always_2d=True, start=start, stop=end)[0][:, : y.shape[1]]
+        mix = export.ab_mix(raw, y, fs, level - ref["integrated_lufs"], level - after["integrated_lufs"],
                             ocfg["ab_segment_s"])
-        ab_path = out_dir / f"{path.stem}_AB.wav"
+        ab_path = out_dir / f"{take.name}_AB.wav"
         export.write_wav(ab_path, mix, fs, 24)
         rep["outputs"]["ab"] = str(ab_path)
         rep["ab_level_lufs"] = round(level, 1)
@@ -625,13 +722,13 @@ def _process(path: Path, cfg: dict, work: Path | None, analyze_only: bool, ab: b
         rdir = out_dir / "reports"
         rdir.mkdir(exist_ok=True)
         spec_after = eq.band_spectrum(y, fs, grid)
-        png = rdir / f"{path.stem}.png"
+        png = rdir / f"{take.name}.png"
         report.plot(png, rep, grid, spec_before, spec_after, target, eq_curve, curves,
                     before_ld.short_term, after_ld.short_term, cfg)
         rep["outputs"]["report"] = str(png)
         if details:
-            tracks_png = rdir / f"{path.stem}_tracks.png"
+            tracks_png = rdir / f"{take.name}_tracks.png"
             report.plot_tracks(tracks_png, rep, details, cfg)
             rep["outputs"]["tracks_report"] = str(tracks_png)
-        (rdir / f"{path.stem}.json").write_text(json.dumps(rep, indent=2, default=float))
+        (rdir / f"{take.name}.json").write_text(json.dumps(rep, indent=2, default=float))
     return rep

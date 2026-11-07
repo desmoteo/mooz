@@ -21,3 +21,6 @@ __pycache__/
 /experiments/prompt_sep/sam-audio/
 /experiments/prompt_sep/inputs/
 /experiments/bass_sr/src/
+
+# New recordings (audio is already ignored; the zip is not)
+/new_tracks/

@@ -6,6 +6,7 @@
   stages/<song>/3_drum_cleanup/     stage 3: drum stems after the clean-up (buzz, bleed, gates),
                                     and <stem>_removed: what the clean-up took out
   stages/<song>/4_drum_bus          stage 4: the drum kit mixed as one instrument
+  stages/<song>/5_premix/           stage 5: every part as it goes into the mix; they add up to it
   stages/<song>/5_mix               stage 5: the full mix before mastering (loudness/limiter)
 
 All stage files share one fixed gain offset (GAIN_DB), so stems and buses keep
@@ -61,10 +62,10 @@ class StageWriter:
         if self.root:
             (self.root / f"{rel}.json").write_text(json.dumps(data, indent=2, default=float))
 
-    def link_raw(self, stems_dir: Path) -> None:
+    def link_raw(self, stems_dir: Path, name: str = "1_raw") -> None:
         if not self.root:
             return
-        link = self.root / "1_raw"
+        link = self.root / name
         if link.is_symlink() or link.exists():
             link.unlink()
         link.symlink_to(os.path.relpath(stems_dir, self.root), target_is_directory=True)
@@ -78,9 +79,13 @@ class StageWriter:
                  "1_raw/             stage 1: the separated stems, untouched (whole recording, not trimmed)",
                  "1_raw/models/      stage 1: every separation model's own outputs, before averaging (12 dB down,",
                  "                   see models/index.json), <step>_<input>/<model>/<stem>.flac and <step>_<input>/ensemble/",
+                 "1_raw_Tr<n>/       stage 1: a close track's separated stems (if the take has close tracks)",
+                 "1_merged/          stage 1: the stems the chains start from: the room's, with the close stems lined up and added",
                  "2_stems/           stage 2: each stem cleaned and studio-processed (no level/placement yet)",
                  "3_drum_cleanup/    stage 3: drum stems after the clean-up, and *_removed = what it took out",
                  "4_drum_bus         stage 4: the drum kit mixed as one instrument",
+                 "5_premix/          stage 5: every part of the mix as it goes in, balanced and placed, the original recording too;",
+                 "                   together they are the mix before the bus chain, so a DAW can remix them",
                  "5_mix              stage 5: the full mix before loudness and limiting (the master is next to stages/)",
                  "", json.dumps(info, indent=2, default=float)]
         (self.root / "README.txt").write_text("\n".join(lines))

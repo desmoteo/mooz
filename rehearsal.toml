@@ -2,6 +2,10 @@
 # every option, with an explanation, is in rehearsal_master/defaults.toml.
 # Order of precedence: defaults < this file < --preset < the song's style < [files."..."].
 
+[input]
+paths = ["new_tracks/drive-download-20261107T141948Z-1-001"]  # the recordings a plain run works on
+presets = ["", "simple_bass"]  # every take twice: the full bass chain, and the simplified one
+
 [loudness]
 target_lufs = -14.0          # where streaming and phones play (-16 kept more punch, -12 is "radio loud")
 
@@ -13,6 +17,7 @@ width = 0.8                  # wider guitars (default 0.6: the masters were near
 balance = 0.6                # less re-centring of the two amps (default 0.8)
 
 [output]
+dir = "processed/full"     # next to the recordings; the simplified bass in processed/simple_bass
 mp3 = true
 # artist = "Circhi"
 # stages = "off"             # don't write the stage files (saves ~0.5 GB per song)

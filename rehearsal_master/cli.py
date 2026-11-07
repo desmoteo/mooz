@@ -10,23 +10,7 @@ import time
 import traceback
 from pathlib import Path
 
-from . import config, pipeline
-
-AUDIO_SUFFIXES = {".wav", ".flac", ".aif", ".aiff"}
-
-
-def _collect(paths: list[Path], out_dir_name: str) -> list[Path]:
-    files = []
-    for p in paths:
-        if p.is_dir():
-            files += sorted(f for f in p.iterdir() if f.suffix.lower() in AUDIO_SUFFIXES and f.is_file())
-        elif p.is_file():
-            files.append(p)
-        else:
-            sys.exit(f"not found: {p}")
-    # never re-process our own output (any preset's folder inside the output folder)
-    top = Path(out_dir_name).parts[0]
-    return [f for f in files if top not in f.parent.parts and not f.stem.endswith("_AB")]
+from . import config, pipeline, takes
 
 
 def _row(label: str, s: dict) -> str:
@@ -37,6 +21,19 @@ def _row(label: str, s: dict) -> str:
 def _print(rep: dict) -> None:
     t = rep["trim"]
     print(f"  kept {t['start_s']:.1f}s .. {t['end_s']:.1f}s of {rep['duration_s']:.1f}s")
+    mt = rep.get("multitrack")
+    if mt:
+        md = mt.get("recorder_mixdown")
+        print(f"  room      {mt['room_track']}" + (f" (the recorder's mix-down is {' + '.join(f'{v:.3f} {k}' for k, v in md['gains'].items())}, "
+                                                   f"residual {md['residual_db']:.0f} dB)" if md else ""))
+        for tr, stems in mt.get("close", {}).items():
+            for s, i in stems.items():
+                if i["used"]:
+                    m = mt["merged"][s]
+                    print(f"  {tr:<9} {s}: {i['level_lu']:+.1f} LU in the track, lined up {i['delay_ms']:+.1f} ms, polarity {i['polarity']:+d} "
+                          f"(steady {i['steady_pct']}%), {100 * m['close_share']:.0f}% of the merged stem")
+                else:
+                    print(f"  {tr:<9} {s}: {i['level_lu'] if i['level_lu'] is not None else '-'} LU in the track: bleed, left out")
     hum = rep.get("hum")
     if hum:
         if hum["harmonics"]:
@@ -257,7 +254,8 @@ def main(argv: list[str] | None = None) -> None:
     if argv is None:
         _run_in_memory_scope()
     ap = argparse.ArgumentParser(prog="rehearsal-master", description=__doc__)
-    ap.add_argument("paths", nargs="*", type=Path, default=[Path(".")], help="WAV files or folders (default: current folder)")
+    ap.add_argument("paths", nargs="*", type=Path,
+                    help="recordings: files or folders (default: [input] paths in the settings, else the current folder)")
     ap.add_argument("-c", "--config", type=Path,
                     help="settings file (default: rehearsal.toml in the recordings' folder, else in the current one)")
     ap.add_argument("--target", type=float, metavar="LUFS", help="override loudness.target_lufs")
@@ -265,41 +263,75 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--ab", action="store_true", help="also write <name>_AB.wav, alternating original/processed at equal loudness")
     ap.add_argument("--no-mp3", action="store_true", help="skip MP3 export")
     ap.add_argument("--preset", metavar="NAME", help=f"mixing preset on top of the defaults ({', '.join(config.presets())})")
+    ap.add_argument("--separate-only", action="store_true", help="only separate every track into the cache, then exit")
     ap.add_argument("--learn-balance", action="store_true",
                     help="print balance targets learnt from the songs' reports (median, outliers removed), then exit")
     args = ap.parse_args(argv)
 
-    folder = args.paths[0] if args.paths[0].is_dir() else args.paths[0].parent  # the recordings' folder
+    first = args.paths[0] if args.paths else Path(".")
+    folder = first if first.is_dir() else first.parent
     cfg_path = args.config or next((d / "rehearsal.toml" for d in (folder, Path(".")) if (d / "rehearsal.toml").exists()), None)
     overrides: dict = {}
     if args.target is not None:
         overrides["loudness"] = {"target_lufs": args.target}
     if args.no_mp3:
         overrides["output"] = {"mp3": False}
-    cfg = config.load(cfg_path, args.preset, overrides)
+    base = config.load(cfg_path, None, overrides)
+    paths = args.paths
+    if not paths:
+        here = cfg_path.parent if cfg_path else Path(".")
+        paths = [here / p for p in base["input"]["paths"]] or [Path(".")]
+    presets = [args.preset] if args.preset else (base["input"]["presets"] or [""])
 
     if args.learn_balance:
-        _learn_balance(folder / cfg["output"]["dir"] / "reports", cfg)
+        where = paths[0] if paths[0].is_dir() else paths[0].parent  # the recordings' folder
+        _learn_balance(where / config.load(cfg_path, args.preset, overrides)["output"]["dir"] / "reports", base)
         return
-    files = _collect(args.paths, cfg["output"]["dir"])
-    if not files:
+    # never re-process our own output, whichever folder it is in
+    skip = {Path(base["output"]["dir"]).parts[0], Path(base["output"]["stems_dir"]).parts[0], "experiments", "prove", ".venv"}
+    try:
+        found = takes.discover(paths, skip, base["multitrack"]["room"])
+    except (FileNotFoundError, ValueError) as e:
+        sys.exit(str(e))
+    if not found:
         sys.exit("no audio files found")
-    print(f"settings: {cfg_path or 'built-in defaults'}" + (f" + preset {args.preset}" if args.preset else ""))
     failed = []
-    for f in files:
-        print(f"\n{f.name}")
-        t0 = time.time()
-        try:
-            rep = pipeline.process_file(f, config.for_file(cfg, f.name), analyze_only=args.analyze, ab=args.ab)
-        except Exception as e:  # one song's failure does not stop the others
-            traceback.print_exc()
-            print(f"  FAILED after {time.time() - t0:.0f}s: {type(e).__name__}: {e}", file=sys.stderr)
-            failed.append(f.name)
-            continue
-        _print(rep)
-        print(f"  ({time.time() - t0:.0f}s)")
+    if args.separate_only:
+        for take in found:
+            print(f"\n{take.name}: room {take.room.name}" + "".join(f", {k} {p.name}" for k, p in take.close.items()), flush=True)
+            t0 = time.time()
+            try:
+                pipeline.separate_take(take, config.for_file(base, take.name))
+            except Exception as e:
+                traceback.print_exc()
+                failed.append(take.name)
+                print(f"  FAILED: {type(e).__name__}: {e}", file=sys.stderr)
+            print(f"  ({time.time() - t0:.0f}s)", flush=True)
+    else:
+        for preset in presets:
+            cfg = config.load(cfg_path, preset or None, overrides)
+            print(f"settings: {cfg_path or 'built-in defaults'}" + (f" + preset {preset}" if preset else ""))
+            if not args.analyze:  # all the takes' stems first: each song's tone targets are then the same, whatever the order
+                for take in found:
+                    if take.close:
+                        try:
+                            pipeline.separate_take(take, config.for_file(cfg, take.name))
+                        except Exception as e:  # reported again below, when this take's turn comes
+                            print(f"  {take.name}: {type(e).__name__}: {e}", file=sys.stderr)
+            for take in found:
+                print(f"\n{take.name}" + (f" [{preset}]" if preset else ""))
+                t0 = time.time()
+                try:
+                    rep = pipeline.process_file(take, config.for_file(cfg, take.name), analyze_only=args.analyze, ab=args.ab)
+                except Exception as e:  # one song's failure does not stop the others
+                    traceback.print_exc()
+                    print(f"  FAILED after {time.time() - t0:.0f}s: {type(e).__name__}: {e}", file=sys.stderr)
+                    failed.append(f"{take.name}" + (f" [{preset}]" if preset else ""))
+                    continue
+                _print(rep)
+                print(f"  ({time.time() - t0:.0f}s)", flush=True)
     if failed:
-        sys.exit(f"\n{len(failed)} of {len(files)} failed: {', '.join(failed)}")
+        sys.exit(f"\n{len(failed)} failed: {', '.join(failed)}")
 
 
 if __name__ == "__main__":
