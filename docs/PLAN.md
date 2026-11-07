@@ -343,8 +343,8 @@ build on the shorter chain.
 The question: the snare's wires buzz along with bass, guitars and voice; the drum splitter
 spreads that buzz over the hi-hat, cymbal and tom stems; by default nothing removes it from
 the hats and cymbals any more. What can still be done? Measured on the five songs with the
-cached stems and the `trial-blend` stage files (scripts in the session's scratch folder, not
-in the repository).
+cached stems and the `trial-blend` stage files ([experiments/buzz/](../experiments/buzz/):
+`buzz_where.py` and `buzz_lift.py`, run from the project root with `uv run python`).
 
 **Where and when it is.** The buzz-only situation, kit idle (no kick, tom or snare for a
 while) while the band plays, is 0.3–7.6 % of each song (Stanza 6.1 %, Abitudine 7.6 %,
