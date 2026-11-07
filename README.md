@@ -31,7 +31,8 @@ dpkg-deb -x ChowTapeModel-Linux-x64-2.11.4.deb chowtape && mkdir -p ~/.vst3
 cp -r chowtape/usr/lib/vst3/CHOWTapeModel.vst3 ~/.vst3/
 ```
 
-The drum augmentation also blends in studio drum samples (kick, snare, toms, hi-hat, crash, ride, ride bell). Build them once (about 15
+The drum augmentation also blends in studio drum samples (kick, snare and toms; hi-hat, crash and ride
+samples exist too but are off). Build them once (about 15
 minutes; they come from the Cambridge-MT raw multitracks and stay in your user cache):
 
 ```sh
@@ -72,12 +73,14 @@ In `processed/` (or the preset's folder), for every song:
    separation misses stays in the recording, which is blended under the stems (7). Every
    model's own outputs are kept for listening.
 3. **Characterise** (stage 0): loudness curve, sections, contrast, build-up, density, tempo,
-   drum and vocal activity, guitar distortion → a style that adjusts the mix stages. And
+   drum and vocal activity, guitar distortion → a style (reported; it adjusts the mix stages
+   only with `character.adapt = true`: by default every song gets the same chain). And
    every raw stem, before any clean-up: level, noise floor, tone, brightness, punch, compared
    with the same instrument's median over all songs.
 4. **Clean the drums** (stage 3): the snare buzz that bass, guitars and voice set off is learnt
-   and removed; bleed keyed to kick and snare hits is ducked; gates between hits and while
-   the drummer is not playing.
+   and removed from the snare and tom stems (the hi-hat and cymbals share its band and are left
+   alone: taking it from them was audible); bleed keyed to kick and snare hits is ducked; gates
+   between hits and while the drummer is not playing.
 5. **Studio stems** (stage 2): kick, snare and toms are reinforced with samples made from the
    drummer's own cleanest hits, the bass's fundamental is pitch-tracked and raised, the voice
    gets its chest resonance back when it goes thin. Each stem is matched to its instrument's
@@ -125,7 +128,8 @@ In `processed/` (or the preset's folder), for every song:
   - *Mix:* a darker tone, −14 LUFS.
 
 Presets live in [rehearsal_master/presets/](rehearsal_master/presets/) and win over
-`rehearsal.toml`; the song's style and per-song settings apply on top.
+`rehearsal.toml`; the song's style (only with `character.adapt = true`) and the per-song
+`[files]` settings apply on top, in that order.
 
 ## Tuning
 
@@ -147,10 +151,10 @@ Put changes in `rehearsal.toml` (only the keys you change; every option is expla
 | vocals too quiet / loud everywhere | `[balance] offsets = { vocals = 2.0 }` (or −2.0); same for `guitars`, `bass`, `drums` |
 | kick or snare too quiet in the kit | `[drum_bus.balance] offsets = { kick = 2.0 }` (`snare`, `toms`, `cymbals`) |
 | kick not punchy | `[tracks.kick] kick_shaper = { punch_db = 5.0 }`, or more samples: `augment = { mix = 0.5 }` |
-| drums sound "sampled" | `[tracks.snare] augment = { library = { mix = 0.3 } }` (studio samples, default 0.4; `enabled = false` for none), `augment = { mix = 0.15 }` (the drummer's own) |
-| kick / snare not punchy enough | `augment = { library = { mix = 0.6 } }`; `flatten = 0.5` evens the hits out |
-| hi-hat dull / low | `[tracks.hihat] augment = { library = { mix = 1.0 } }` (studio hats on its hits, default 0.8), `gain_db = 5.0` (default 4) |
-| crashes / ride dull | `[tracks.cymbals] cymbal_augment = { mix = { crash = 0.7, ride = 0.5, bell = 0.0 } }` (studio cymbal hits by kind, defaults 0.5 / 0.35 / 0: another cymbal's bell clashes; `enabled = false` for none); more hits taken as crashes: `crash_pct = 80.0` |
+| drums sound "sampled" | `[tracks.snare] augment = { library = { mix = 0.1 } }` (studio samples, default 0.2; `enabled = false` for none), `augment = { mix = 0.1 }` (the drummer's own, default 0.15) |
+| kick / snare not punchy enough | `augment = { mix = 0.3, library = { mix = 0.4 } }` (the levels before November 2026); `flatten = 0.5` evens the hits out |
+| hi-hat dull / low | `[tracks.hihat] gain_db = 5.0` (default 4); studio hats on its hits: `augment = { enabled = true }` (off by default, at 0.8 under each hit) |
+| crashes / ride dull | `[tracks.cymbals] cymbal_augment = { enabled = true }` (studio cymbal hits by kind, off by default; `mix = { crash = 0.5, ride = 0.35, bell = 0.0 }`: another cymbal's bell clashes); more hits taken as crashes: `crash_pct = 80.0` |
 | bass too boomy / still thin | `[tracks.bass] bass_fundamental = { boost_db = 1.0 }` (or 3.0); the low notes' lost fundamental: `restore_db = -6.0` (less) .. `0.0` (more) |
 | bass buzzy / gritty | `[tracks.bass] harmonic_clean = { depth_db = 18.0 }` (default 12; `enabled = false` for none); `exciter = { amount_db = -23.0 }` |
 | bass clanky / smeared (try) | `[tracks.bass] note_eq = { enabled = true }`: note by note, each note's harmonics up to where they stand out, its attack evened out with the song's others, the rest above 250 Hz down 15 dB (replaces harmonic_clean; `depth_db`, `attack = { max_cut_db = ... }`) |
@@ -158,12 +162,13 @@ Put changes in `rehearsal.toml` (only the keys you change; every option is expla
 | snare dull | `[tracks.snare] transient = { attack = [0.3, 1.0, 0.3] }` |
 | cymbals harsh / dull / thin | `[tracks.cymbals]` EQ: the 3.5 kHz cut, the 7 kHz shelf, the 1.6 kHz body (+2.5 dB); `tone_match = { reference = 0.5 }` for less of the studio tone (hi-hat too) |
 | hi-hat choked on kicks | `[tracks.hihat]` duck `depth_db` (default 5) |
-| cymbals / hats thin after clean-up | `[buzz] stem_floor_db = { hihat = -6.0, cymbals = -6.0 }`; `kit_gate = { depth_db = 6.0 }` |
+| snare buzz audible in the hats / cymbals | `[buzz] stems = ["snare", "toms", "hihat", "cymbals"]` (take it from them too; it was heard as artifacts, so by default only snare and toms); thinner after it: `stem_floor_db = { hihat = -6.0, cymbals = -6.0 }`; cymbals too far back: `[drum_bus.balance] offsets = { cymbals = 4.0 }` (default 1.5) |
 | bass boomy / thin | `[tracks.bass]` the 100 Hz low shelf (default +2.5 dB) |
 | a stem sounds different from song to song | its `tone_match = { strength = 0.9 }` (0 = off); `transient = { adapt = true }` for the attack |
 | guitars too wide / narrow | `[tracks.guitar] width = 0.75`, `balance = 0.8` (1 = fully centred) |
 | two guitars as separate stems | `[stems] pan_split = { enabled = true }` (no new separation needed); place them with `[tracks.guitar_left] pan = …` |
-| squashed | `loudness.target_lufs = -16.0`; or a song's style: `character.adapt = false` |
+| squashed | `loudness.target_lufs = -16.0` |
+| the mix should follow each song's character | `[character] adapt = true` (wall / ballad / build / dynamic / steady tables; off by default so the songs sound alike) |
 | songs differ in tone | `[consistency] strength = 0.8`; a song should keep its own: `[files."Vita".consistency] enabled = false` |
 | snare buzz still there between hits | `[buzz] stem_between_floor_db = { snare = -28.0, hihat = -24.0 }` (deeper; same keys for cymbals, toms) |
 | hats / cymbals lose their decay | `[buzz] own_hit_ms = { hihat = 400.0 }` (keep more after each hit) or a shallower `stem_between_floor_db` |
@@ -194,6 +199,6 @@ Background reading, with how this pipeline compares: [docs/RESEARCH.md](docs/RES
 ## Development
 
 ```sh
-uv run pytest          # 61 checks, about a minute: DSP, the pipeline end to end, the separation library's internals
+uv run pytest          # 66 checks, about a minute: DSP, settings, the pipeline end to end, the separation library's internals
 uv run --with remotezip --with requests python tools/build_raw_references.py   # rebuild the raw-track references
 ```

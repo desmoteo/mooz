@@ -1,9 +1,9 @@
 # Plan: a simpler rehearsal-master
 
 Status, 7 November 2026: steps 1–3 are done (step 1 apart from deletions that wait for a
-yes); the trial of step 2 was judged better by ear. The blend of step 3 is in the code
-with `original_share = 0.25`; the other trial settings are still only in
-`rehearsal-trial.toml` until step 4 makes them the defaults. Nothing that changes the sound is implemented: the audio code and
+yes); the trial of step 2 was judged better by ear, and its settings plus the blend of
+step 3 are now the defaults. Decision of 7 November: the code is kept; nothing is pruned.
+The stages that are off by default stay available as settings. Nothing that changes the sound is implemented: the audio code and
 `rehearsal.toml` are as they were. It replaces no other document: [DESIGN.md](DESIGN.md)
 still describes the pipeline as it runs today.
 
@@ -141,26 +141,21 @@ Consequences to know:
 - The balance measures each group only while it and the rest of the band play together,
   instead of comparing whole-song loudness.
 
-### 5. What stays and what goes
+### 5. What is on and what is off
 
-A stage stays only if switching it off is audibly worse in a blind A/B on at least two of
-the five songs, or moves one of the [targets](#targets) the wrong way.
+Decision of 7 November 2026: **the code stays.** Nothing is deleted or parked; what the trial
+switched off is off by default and can be switched back on in `rehearsal.toml`. The earlier
+plan of pruning a third of the package is dropped; the simplification is in what runs, not
+in what exists.
 
-| | stays | goes | decided by A/B |
+| | on by default | off by default (settings) | to decide by A/B (step 5) |
 |---|---|---|---|
 | separation | the ensemble plan | cascade plan, demucs backend, mask refinement, backing-vocals step | vocal de-reverb step |
-| drums | hit gates, kit gate, EQ, tone match, own samples, drum bus balance and glue | buzz fingerprint, cymbal and hi-hat samples | kick shaper vs transient shaper (one of them), studio samples on the shells, shared shell room |
-| bass | expander, EQ, tone match, fundamental restore, compressor, kick duck | `note_eq` (off today, moved to `experiments/`) | exciter, bass enhancer, transient shaper, saturator, resonance suppressor, harmonic clean-up |
+| drums | hit gates, kit gate, EQ, tone match, own and studio samples at half level, drum bus balance and glue | buzz fingerprint on hats and cymbals, cymbal and hi-hat samples | kick shaper vs transient shaper, studio samples on the shells, shared shell room |
+| bass | expander, EQ, tone match, fundamental restore, harmonic clean-up, compressor, transient, saturator, exciter, enhancer, kick duck | `note_eq` | exciter, bass enhancer, transient shaper, saturator, resonance suppressor, harmonic clean-up |
 | guitars, vocals | EQ, tone match, compressor (vocals), vocal unmasking duck, plate and slapback | | resonance suppressor, saturator, exciter |
-| mix bus | original blend, mono lows, tonal EQ, consistency EQ, glue, loudness, limiter | residual add-back, song styles | multiband compressor, clipper, tape |
-| presets | default, albini | indie, modern, interpol: parked (below) | |
-
-**Parked presets.** indie, modern and interpol move to `presets/parked/`: not listed by
-`--preset`, not tested, not kept working while the chain is simplified. What only they use
-goes with them: the pan split, the dual bass chain, the second compressor, sample
-flattening, and the tape echo, delay and chorus sends. Grit stays (albini uses it), as do
-the plate and slapback. Their existing masters in `processed/` are left as they are. They
-come back, one at a time, once the simple chain sounds right.
+| mix bus | original blend, mono lows, tonal EQ, multiband, tape, glue, consistency EQ, clipper, loudness, limiter | song styles (`character.adapt`), residual add-back (gone) | multiband compressor, clipper, tape |
+| presets | default, albini, indie, modern, interpol (all kept; the three built on the default inherit the new defaults) | | |
 
 ## Review findings and where they are handled
 
@@ -281,15 +276,20 @@ comments.
    [tests/test_pipeline.py](../tests/test_pipeline.py), within −60 dB), the original
    measures 4.8 LU under the processed part in every song (yes), and two presets can run on
    one song at the same time (the shared cache is no longer written to; not tried live).
-4. **Cut (prune).**
-   - Delete what the "goes" column lists; park the three presets.
-   - Fix the sample levels from step 2; add the 1.5 dB sample limit.
-   - Remove `process.sh` (the earlier ffmpeg/sox script); move `note_eq` to `experiments/`.
-   - DESIGN describes what the pipeline does; its fix-by-fix history ("first version's
-     artefacts", "tried and dropped") moves to the git history.
+4. **Keep the configuration.** Done on 7 November 2026, in place of the pruning step.
+   - Done: the trial settings are the defaults (`defaults.toml`): buzz removal on snare and
+     toms only, samples at 0.15 / 0.2, no studio hats or cymbal samples, `character.adapt =
+     false`; with the blend of step 3 at 0.25. `rehearsal-trial.toml` is gone (its content
+     is the default; it stays in the git history).
+   - Done: README, DESIGN and `defaults.toml` describe what runs by default and what is
+     available, with the dates and reasons of the changes.
+   - Not done, by decision: no code removed, no presets parked. The 1.5 dB sample limit is
+     deferred to step 5 (the samples are now half as loud and the hi-hat samples are off).
+   - `processed/` still holds the masters of the old chain; a plain `uv run rehearsal-master`
+     now produces what `processed/trial-blend/` holds.
 
-   *Done when:* the end-to-end test passes and the settings file and package are clearly
-   smaller (aim: `defaults.toml` from 923 lines to about 500).
+   *Done when:* a run with no settings file gives the approved sound (the defaults load and
+   the 66 tests pass; a null comparison against `trial-blend` is still to be made).
 5. **Objective quality loop.**
    - Extend the room benchmark ([experiments/sep_bench](../experiments/sep_bench): 12
      simulated-room songs with their close-mic sources) past the separation: processed
@@ -338,10 +338,79 @@ in step 6 (the buzz library disappears with them). Step 7 needs step 5's numbers
 cache in step 9 comes last: it needs the determinism from step 6, and it is cheaper to
 build on the shorter chain.
 
+## Snare buzz in the other stems: assessment (7 November 2026)
+
+The question: the snare's wires buzz along with bass, guitars and voice; the drum splitter
+spreads that buzz over the hi-hat, cymbal and tom stems; by default nothing removes it from
+the hats and cymbals any more. What can still be done? Measured on the five songs with the
+cached stems and the `trial-blend` stage files (scripts in the session's scratch folder, not
+in the repository).
+
+**Where and when it is.** The buzz-only situation, kit idle (no kick, tom or snare for a
+while) while the band plays, is 0.3–7.6 % of each song (Stanza 6.1 %, Abitudine 7.6 %,
+Riempio 0.3 %). In those frames, of the drum stems, the cymbals stem holds the most
+1.2–12 kHz energy in four songs out of five (e.g. Abitudine −56 dB against hi-hat −68 and
+snare −84), then the hi-hat, then the snare, the toms nothing. Caveat: this measure cannot
+tell buzz from a cymbal wash ringing into a break; the correlation of those frames' level
+with the exciters' level (0.4–0.6 on Stanza and Abitudine, where the frames are many) says
+that a good part of it does follow bass, guitars and voice, i.e. is buzz. The rest of the
+time, between hits while the kit plays, the buzz sits under the hats' and cymbals' own
+decay: the hi-hat stem between strokes is only 3–12 dB under its strokes, the cymbals
+13–40 dB.
+
+**What the chain does to it.** Nothing, in either direction: the hat and cymbal chains move
+the between-stroke level and the stroke level together, within ±1 dB on every song (raw
+stems against `2_stems`). The buzz is not lifted by processing; it is as audible as the
+recording makes it, less the kit gate (−10 dB on hats and cymbals in idle passages) and
+plus the original blend.
+
+**The blend caps every stem-side fix.** Whatever a gate removes from a stem, the original's
+share (0.25, amplitude 0.58 against the stems) brings back: a stem fully muted still leaves
+that sound at −8.7 dB in the mix; the kit gate's −10 dB on the stems comes to about −5 dB.
+Deepening the kit gate to 20 dB would gain about 2 dB more; the cap moves only with the
+share (0.15 gives −10.6 dB) or by letting the original follow the same gate in the buzz
+band, which is code.
+
+**Tried and dropped, with numbers:**
+- *Fingerprint removal (NMF) on hats and cymbals:* 2–4.5 dB out of the band, heard as
+  artifacts; this is why it is off there (decision 1).
+- *Predicting the buzz from its exciters* (earlier work): explained 12–60 %, mostly noise.
+  Now: the correlation of the hat and cymbal stems' level with the exciters in buzz-only
+  frames is 0.2–0.6, so a predictor would explain at most about a third.
+- *Sustained/transient split (HPSS) on the hi-hat stem* (Vita and Stanza, margins 1–4):
+  the buzz splits evenly between the two parts (−10.6 and −11.5 dB at margin 2), because
+  wire rattle is itself a stream of micro-transients, not a steady noise; and the hat
+  strokes are not cleanly percussive either (−4.8 against −9.8 dB). No separation there.
+
+**What can be done, in order of effect:**
+1. *In the room*, by far the largest: the strainer off (snares disengaged) in intros and
+   breaks, a little damping on the snare wires or the resonant head, the bass amp away from
+   the kit or turned down a little in the room, a high-pass on the bass amp. This removes
+   the buzz from the recording, where no stage can reach it, and costs nothing. Worth a
+   test at the next rehearsal: one song with the snares off in the intro.
+2. *Kit gate deeper and quicker* on hats and cymbals (`kit_gate depth_db` 10 → 15,
+   `hold_s` 2 → 1.5): settings only, acts only in idle passages (0.3–7.6 % of a song), about
+   2 dB more in the mix because of the blend's cap; low risk, as the stem's own strong
+   strokes still open it. To try by ear.
+3. *A lower share or a gated original:* `original_share = 0.15` moves the cap from −8.7 to
+   −10.6 dB and also brings less room and bleed back everywhere; or (code, step 5
+   candidate) the original's 1.2–12 kHz band follows the kit gate in idle passages. Both
+   change more than the buzz.
+4. *A shallow hit gate on the hi-hat* (as the snare's, 4–6 dB, release 150 ms): the stem
+   between strokes is only 3–12 dB under its strokes, so the gate would act on the hats'
+   own decay as much as on the buzz. Likely to be heard as the artifacts we just removed;
+   not recommended without a blind A/B.
+5. *Better buzz removal than the fingerprint* is not in sight: the three model-based
+   approaches tried (NMF, exciter prediction, HPSS) fail for the same reason, the buzz and
+   the hats are the same kind of signal in the same band. A snare-off reference recording
+   (the band playing a passage with the snares disengaged, then engaged) would give a true
+   buzz template to test any future method against; without it, listening is the only
+   judge.
+
 ## Trying it today with settings only
 
-Everything except the original blend can be heard now by adding this to `rehearsal.toml`
-(checked: it loads with the current code).
+Historical: this was the step-2 trial block. Since 7 November 2026 these are the defaults
+and the block is no longer needed; it is kept to show what the trial changed.
 
 ```toml
 [buzz]

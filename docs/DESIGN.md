@@ -34,13 +34,13 @@ flowchart TD
     REC["Recording<br/>32-bit float WAV"] --> PREP["Prepare (whole file)<br/>trim · high-pass 30 Hz · mains-hum notches"]
     PREP --> SEP[("Stem separation<br/>GPU · cached per song")]
     SEP --> S0["0 · Characterise<br/>loudness curve · sections · contrast · arc<br/>density · tempo · drum/vocal activity → style"]
-    S0 -. "style overrides" .-> SET[["mix settings<br/>(defaults · rehearsal.toml · preset · style)"]]
+    S0 -. "style overrides<br/>(only with adapt = true)" .-> SET[["mix settings<br/>(defaults · rehearsal.toml · preset · style · per song)"]]
     SEP --> S1["1 · Raw stems<br/>vocals · vocal_room · guitar · bass · kit pieces · other"]
     S1 --> PR["0 · Stem profiles<br/>level · noise floor · tone · punch<br/>vs the median of all songs"]
     PR -. "expander threshold<br/>tone match · attack amount" .-> PAR[["per-stem parameters"]]
     PAR -.-> CL & S3 & S2
     S1 --> Q1{"drum stem?"}
-    Q1 -- yes --> S3["3 · Drum clean-up<br/>snare-buzz NMF · bleed ducks on kick/snare hits<br/>hit gates · kit gate"]
+    Q1 -- yes --> S3["3 · Drum clean-up<br/>snare-buzz NMF (snare, toms) · bleed ducks on kick/snare hits<br/>hit gates · kit gate"]
     Q1 -- no --> CL["clean-up<br/>gap expander · snare-bleed ducks"]
     S3 --> S2["2 · Studio stems<br/>tone (tone match, EQ, dynamic EQ, resonances)<br/>shape (compressor, shapers) · harmonics"]
     CL --> S2
@@ -91,7 +91,8 @@ listening stages.
 Rules, in order: **ballad** (drums < 50 % or slow and sparse) · **build** (arc ≥ 4 LU and
 rising) · **dynamic** (contrast ≥ 7 LU) · **wall** (contrast ≤ 5 LU, drums ≥ 85 %, dense or
 distorted) · **steady**. Each style has an override table (`[character.styles.<style>]`)
-merged into the mix settings, e.g. *wall* adds glue, tape and drum parallel compression;
+merged into the mix settings when `character.adapt` is on (off since November 2026: one
+chain for every song, so the songs sound alike; the style is still measured and reported), e.g. *wall* adds glue, tape and drum parallel compression;
 *ballad* relaxes compression and brings the voice forward; *build* keeps the glue from
 flattening the rise. Overrides change amounts, not on/off switches, so a preset that
 disables a stage keeps it disabled.
@@ -220,7 +221,11 @@ no new separation; both halves share the guitar's profile and tone match.
 - **Hit triggers** (0..1 per sample) for kick, snare and toms from their stems, each in the
   band where only that drum lives (the snare on its body, 150–400 Hz, so its own wire buzz is
   never taken for a hit).
-- **Snare buzz**, two steps. (1) *Learn*: frames of the hi-hat/cymbal stems while kick and
+- **Snare buzz**, two steps. Since November 2026 it is removed from the snare and tom stems
+  only (`[buzz] stems`): on the hi-hat and cymbals, which share its band, the 2–4.5 dB it
+  took was heard as artifacts, while on the snare and toms it takes 0.2–0.6 dB (their hit
+  gates do most of the work there). The figures below are from when it ran on all four.
+  (1) *Learn*: frames of the hi-hat/cymbal stems while kick and
   toms are silent, and not within 300 ms of the stem's own strokes, hold only the snare
   resonating with bass, guitars and voice. Without that last condition, hats played on their
   own were learnt as "buzz", and the removal took 6–8 dB off the hats while they played;
@@ -300,14 +305,14 @@ Three steps reinforce what the separation and the room took away
   clusters ≥ 15 % apart). Every hit then gets its sample:
   - phase-aligned to the hit within ±2 ms, and scaled to it by a least-squares fit over the
     attack (the fit is ≈ 0.9–1.2 on real hits, i.e. they add in phase);
-  - blended at 0.3 (about −10 dB);
+  - blended at 0.15 (about −16 dB; 0.3 until November 2026, when they were judged too loud);
   - never on bleed: hits more than 18 dB below the loudest, or correlating < 0.6 with the
     sample, are skipped.
 
   On Abitudine Strato about 260 kick, 180 snare and 29 tom hits (the fills, out of 290 tom
   "hits") get samples. The samples are saved in `2_stems/samples/`. Albini: off.
 
-  **Studio samples** go on the same hits, at 0.4 (−8 dB under the hit; `augment.library`; `flatten` 0..1 evens their level out over the hits).
+  **Studio samples** go on the same hits, at 0.2 (−14 dB under the hit; 0.4 until November 2026; `augment.library`; `flatten` 0..1 evens their level out over the hits).
   They are raw close-mic one-shots from the Cambridge-MT multitracks: clean hits of 12 kick,
   12 snare and 12 tom tracks, aligned and averaged in a loud and a soft layer, built once by
   [tools/build_drum_samples.py](../tools/build_drum_samples.py) into
@@ -321,7 +326,9 @@ Three steps reinforce what the separation and the room took away
 
   The own samples keep the drummer's sound; the studio ones add a close mic's attack and
   body that the room recording never had.
-- **Hi-hat samples**: studio hi-hat one-shots (raw close mics, `tools/build_drum_samples.py`)
+- **Hi-hat samples** (off since November 2026: with the recording blended under the stems the
+  real hats' top is back, and the studio hats were heard as artifacts; on Vita they added
+  11 dB to the stem): studio hi-hat one-shots (raw close mics, `tools/build_drum_samples.py`)
   on the hi-hat's hits, 6–14 kHz: single real hits (a hat is mostly noise: an average of
   aligned hits cancels exactly the top it should bring), the library hat nearest the song's
   in brightness (spectral centroid of its loud hits, measured the same way on both, in the
@@ -332,7 +339,8 @@ Three steps reinforce what the separation and the room took away
   a hi-hat 4.5 dB weaker), where the hat treatment does not reach them: the hi-hat and cymbals
   now come mostly from the 5-stem model (0.75), and the hi-hat is +4 dB in the kit, its studio
   hats at 0.8 (about −2 dB under each hit).
-- **Cymbal samples** (`cymbal_augment`): the cymbals stem's hits (a 6 dB rise of the 3–14 kHz
+- **Cymbal samples** (`cymbal_augment`, off since November 2026, as the hi-hat samples): the
+  cymbals stem's hits (a 6 dB rise of the 3–14 kHz
   level within 30 ms, 5 ms frames: a crash's noisy decay is not taken for new hits, quieter
   hits after a crash are still found) are told apart: a **bell** is tonal (spectral flatness
   in the band under 0.6 × the stem's median hit), a **crash** among the loudest 40 % and ringing
@@ -487,7 +495,7 @@ pattern method as the mix balance, below), summed, and given the bus chain:
   preset's songs (`<dir>/_mixtone/`, seeded from earlier stage-5 files), so the band sounds
   alike from song to song. The glue compressor (30 ms attack, 150 ms release, 1.8:1) finds
   its threshold by bisection so that it averages a target gain reduction while the band
-  plays: 1.2 dB, by style 0.6 (ballad) to 1.8 (wall). That is the "1–2 dB of glue" engineers
+  plays: 1.2 dB (with `character.adapt`, by style 0.6 for a ballad to 1.8 for a wall). That is the "1–2 dB of glue" engineers
   aim for, the same in every song.
 - **Master**: gain to the loudness target, oversampled soft clipper, look-ahead true-peak
   limiter; repeated until within 0.05 LU; fades; TPDF-dithered 24-bit WAV, MP3, A/B files.
@@ -517,8 +525,8 @@ Measured on these mixes:
 - **Delay.** Its oversampling filters delay it by a few samples; the delay is measured and
   removed.
 
-Settings: default drive 0.5, saturation 0.5, bias 0.8 (flat, harmonics ≈ −25 dB); the
-*wall* style drives it harder; the *ballad* style hits it 3 dB softer; Albini hits it 3 dB
+Settings: default drive 0.5, saturation 0.5, bias 0.8 (flat, harmonics ≈ −25 dB); with
+`character.adapt` the *wall* style drives it harder and the *ballad* style hits it 3 dB softer; Albini hits it 3 dB
 hot at normal bias (head bump, softer top). Comparison excerpts are in
 `processed/experiments/tape/`.
 
@@ -558,7 +566,8 @@ hot at normal bias (head bump, softer top). Comparison excerpts are in
 
 Layers, each overriding the previous: [defaults.toml](../rehearsal_master/defaults.toml) →
 `rehearsal.toml` (the folder's settings) → `--preset` ([presets/](../rehearsal_master/presets/))
-→ the song's style (`[character.styles.*]`) → per-song `[files."<part of name>"]`. Keys are
+→ the song's style (`[character.styles.*]`, only with `character.adapt`) → per-song
+`[files."<part of name>"]` → the command line. Keys are
 validated (a typo is an error), tables merge, lists replace. Track chains start from
 `[track_defaults]`, then the track they are `based_on`, then their own settings, across all
 layers.
@@ -631,7 +640,7 @@ processed/stems/_buzz/              buzz library (one file per song)
 |---|---|
 | `cli.py` | arguments, file collection, memory-capped scope, summaries, `--learn-balance` |
 | `config.py` | layered, validated settings; track inheritance |
-| `pipeline.py` | the stage order; drum bus; master loop |
+| `pipeline.py` | the stage order; drum bus; the original blend and the balance in it; master loop |
 | `character.py` | stage 0 metrics and style |
 | `profile.py` | stage 0 stem profiles, cross-song targets, tone match |
 | `separate.py` | separation backends, chained steps, cache, pan split |
@@ -656,7 +665,7 @@ model's kept outputs); stem profiles about 15 s the first time (cached); process
 
 ## 9. Tests
 
-`uv run pytest` (61 checks): K-weighting and loudness of a reference sine, compressor
+`uv run pytest` (66 checks): K-weighting and loudness of a reference sine, compressor
 release, exact band reconstruction, limiter ceiling, mono bass, FIR accuracy, every effect on
 synthetic signals (de-esser, resonances, transients, bass enhancer, saturator, gates, ducks),
 pan split (and that it runs outside the separation cache), chunked separation, hum, expander
@@ -671,8 +680,10 @@ glue target, chorus send, flattened samples, nested preset tables, tempo-synced 
 delay, dual bass chain (exact when off, mono lows, driven and wider highs). Two more files:
 `test_pipeline.py` runs the whole chain on a 12 s synthetic song with fixture stems in place of
 the models (default and albini: finite audio, loudness target, true-peak ceiling, reports and
-stage files); `test_separation_glue.py` checks the audio-separator internals that
-`separate.py` patches, which is why that library is pinned.
+stage files, and the null test: every processor off, the master is the recording to within
+−60 dB); `test_config.py` the layers' precedence and track inheritance;
+`test_separation_glue.py` the audio-separator internals that `separate.py` patches, which is
+why that library is pinned.
 
 ## 10. Other tools considered
 
@@ -726,7 +737,7 @@ surgical EQ.
 | neural de-reverb of vocals (DeepFilterNet) | tested, rejected (above); the guided recombination is used |
 | aggressive chest boost + exciter on vocals | upward chest EQ (180 Hz, +3 dB when thin), saturator and exciter, kept moderate |
 | "brutal" transient shaping (sustain to near zero) | not used: the kit lost too much already; the transient amounts are adapted per stem to its measured punch |
-| triggering a sample library at 50–60 % | done: raw Cambridge-MT close-mic one-shots, matched in pitch and tuned, at 0.4 on top of the drummer's own samples at 0.3 |
+| triggering a sample library at 50–60 % | done, lower: raw Cambridge-MT close-mic one-shots, matched in pitch and tuned, at 0.2 on top of the drummer's own samples at 0.15 |
 | sub sine an octave below the bass notes | not used: it would play the line an octave lower (20 Hz under a low E); the existing fundamental is reinforced in phase instead |
 | bass DI / cabinet impulse response | a DI is close to flat; the measured answer is the tone match (raw DI/amp tracks are far brighter than this bass, which the band wanted less of) |
 | low-mid expander on guitars (300–600 Hz) | a dynamic cut at 420 Hz while room mud builds up |

@@ -227,7 +227,8 @@ reference = 0.0              # 0..1: blend the target towards raw, unprocessed s
 
 [track_defaults.augment]   # drum sample augmentation (augment.py): samples made from the drummer's cleanest hits
 enabled = false            # in this song (2 velocity layers; toms: one per drum, by pitch), placed phase-aligned
-mix = 0.3                  # and at each hit's velocity under the stem, at this level (0.3 = about -10 dB)
+mix = 0.15                 # and at each hit's velocity under the stem, at this level (0.15 = about -16 dB; was 0.3
+                           # until the samples were judged too loud by ear, November 2026)
 length_ms = 400.0
 fmin_hz = 40.0             # band the hits are detected in
 fmax_hz = 150.0
@@ -245,7 +246,7 @@ min_corr = 0.6             # nor where the stem does not look like the sample
 # flatten 0..1: how far their level ignores the drummer's dynamics (1 = every hit alike)
 # match: "pitch" (drums: the nearest pitch, tuned) or "brightness" (hi-hat: the nearest spectral centroid, untuned);
 # band_level: level-match within fmin..fmax only (a stem with bleed: the bleed does not count)
-library = { enabled = false, drum = "kick", mix = 0.4, dir = "~/.cache/rehearsal-master/drum_samples", max_pitch_shift = 0.25, flatten = 0.0, match = "pitch", band_level = false }
+library = { enabled = false, drum = "kick", mix = 0.2, dir = "~/.cache/rehearsal-master/drum_samples", max_pitch_shift = 0.25, flatten = 0.0, match = "pitch", band_level = false }
 
 [track_defaults.cymbal_augment]  # studio cymbal one-shots on the cymbals' hits, by kind (augment.py): bell (tonal),
 enabled = false            # crash (loud and ringing) or ride stroke, each with a single real hit of its kind from the
@@ -574,7 +575,7 @@ kick_eq = { enabled = true, gain_db = 3.5, q = 1.0, fmin_hz = 50.0, fmax_hz = 12
 kick_shaper = { enabled = true, fmax_hz = 20000.0, punch_db = 3.5, punch_ms = 100.0, attack_db = 3.0, attack_ms = 15.0, tail_db = 3.0, tail_start_ms = 160.0, tail_ms = 200.0 }
 transient = { enabled = true, crossovers_hz = [1500.0], attack = [0.0, 0.8], sustain = [0.0, -0.3], max_db = 6.0, adapt = true }  # sharper beater
 tone_match = { enabled = true, strength = 0.6, max_boost_db = 2.0, max_cut_db = 3.0, fmin_hz = 40.0, fmax_hz = 8000.0, reference = 0.3 }
-augment = { enabled = true, mix = 0.3, length_ms = 400.0, fmin_hz = 40.0, fmax_hz = 150.0, clean_of = ["snare", "toms"], library = { enabled = true, drum = "kick", mix = 0.4 } }
+augment = { enabled = true, mix = 0.15, length_ms = 400.0, fmin_hz = 40.0, fmax_hz = 150.0, clean_of = ["snare", "toms"], library = { enabled = true, drum = "kick", mix = 0.2 } }
 
 [tracks.snare]
 eq = [
@@ -594,7 +595,7 @@ gate = { enabled = true, fmin_hz = 150.0, fmax_hz = 400.0, depth_db = 8.0, relea
 # body: tighter / crack (1-5 kHz): much sharper / wires & jingles: a little snap, shorter
 transient = { enabled = true, crossovers_hz = [1000.0, 5000.0], attack = [0.3, 0.8, 0.3], sustain = [-0.3, -0.4, -0.3], max_db = 6.0, adapt = true }
 tone_match = { enabled = true, strength = 0.6, max_boost_db = 2.0, max_cut_db = 3.0, fmin_hz = 100.0, fmax_hz = 12000.0, reference = 0.3 }
-augment = { enabled = true, mix = 0.3, length_ms = 350.0, fmin_hz = 150.0, fmax_hz = 400.0, clean_of = ["kick", "toms"], library = { enabled = true, drum = "snare", mix = 0.4 } }
+augment = { enabled = true, mix = 0.15, length_ms = 350.0, fmin_hz = 150.0, fmax_hz = 400.0, clean_of = ["kick", "toms"], library = { enabled = true, drum = "snare", mix = 0.2 } }
 
 [tracks.toms]
 expander = { enabled = false, below_db = 35.0, ratio = 2.0, range_db = 10.0, hold_ms = 120.0 }  # (the hit gate does this)
@@ -606,7 +607,7 @@ eq = [
 gate = { enabled = true, fmin_hz = 70.0, fmax_hz = 400.0, depth_db = 10.0, release_ms = 250.0 }  # between hits: bleed
 transient = { enabled = true, attack = 0.3, sustain = -0.5, max_db = 6.0, adapt = true }   # shorter ring
 tone_match = { enabled = true, strength = 0.5, max_boost_db = 2.0, max_cut_db = 3.0, fmin_hz = 60.0, fmax_hz = 10000.0 }
-augment = { enabled = true, mix = 0.3, length_ms = 600.0, fmin_hz = 70.0, fmax_hz = 400.0, min_hits = 6, pitch_clusters = 3, clean_of = ["snare"], library = { enabled = true, drum = "toms", mix = 0.4 } }
+augment = { enabled = true, mix = 0.15, length_ms = 600.0, fmin_hz = 70.0, fmax_hz = 400.0, min_hits = 6, pitch_clusters = 3, clean_of = ["snare"], library = { enabled = true, drum = "toms", mix = 0.2 } }
 
 [tracks.hihat]             # the tamburello's jingles probably land here or in cymbals
 eq = [
@@ -625,7 +626,9 @@ transient = { enabled = true, crossovers_hz = [2000.0], attack = [0.0, 0.3], sus
 # studio hi-hat one-shots on its hits (the separated hats lost their stick attack and top): single real hits from
 # raw close mics (tools/build_drum_samples.py, an average of noisy hats would be a dull blur), the one nearest in
 # brightness, untuned, level-matched in the hats' band (bleed does not count), 2 dB under each hit
-augment = { enabled = true, own = false, fmin_hz = 6000.0, fmax_hz = 14000.0, length_ms = 200.0, library = { enabled = true, drum = "hihat", mix = 0.8, match = "brightness", band_level = true } }
+# off since November 2026: with the original recording blended under the stems the real hats' top is back, and the
+# studio hats were heard as artifacts (on one song they added 11 dB to the stem)
+augment = { enabled = false, own = false, fmin_hz = 6000.0, fmax_hz = 14000.0, length_ms = 200.0, library = { enabled = true, drum = "hihat", mix = 0.8, match = "brightness", band_level = true } }
 gain_db = 4.0              # the hats sounded low under the cymbals (their group is balanced as one)
 # towards raw studio hi-hat tracks, not the band's own median (which carries the snare/kick bleed of the
 # separated stems: +5 dB at 500 Hz): less boxy, the top back (separated hats are 3-5 dB dull above 8 kHz)
@@ -651,7 +654,7 @@ transient = { enabled = true, crossovers_hz = [2000.0], attack = [0.0, 0.3], sus
 tone_match = { enabled = true, strength = 0.7, max_boost_db = 3.0, max_cut_db = 4.0, fmin_hz = 500.0, fmax_hz = 16000.0, reference = 0.8 }
 
 # studio crash, ride and bell hits on the cymbals' hits, by kind (the separated ones are dull and flat at the hits)
-cymbal_augment = { enabled = true }
+cymbal_augment = { enabled = false }   # off since November 2026 (as the studio hats above)
 [tracks.backing_vocals]    # only with the (off by default) lead/backing step
 gain_db = -1.0
 eq = [
@@ -800,7 +803,9 @@ rms_ms = 20.0
 
 [buzz]                     # sympathetic snare buzz (wires/head resonating with bass, guitars, voice)
 enabled = true             # step 1: its fingerprint is learnt where it is alone (hi-hat/cymbal stems while
-stems = ["snare", "hihat", "cymbals", "toms"]  # kick and toms are silent), pooled over all songs;
+stems = ["snare", "toms"]  # kick and toms are silent), pooled over all songs; removed from these stems only:
+                           # the hi-hat and cymbals share the buzz's band, and the 2-4.5 dB it took from them
+                           # was heard as artifacts (November 2026); add them here to take it from them too;
 band_hz = [1200.0, 12000.0]                    # step 2: it is removed from these stems before their chains
 components = 2             # spectral templates for the buzz
 music_components = 12      # free templates for everything else in the stem
@@ -818,7 +823,8 @@ protect_ms = 150.0         # snare/toms: nothing removed for this long after eac
 
 [character]                # stage 0: what kind of song it is (wall, ballad, build, dynamic, steady)
 enabled = true
-adapt = true               # adjust the mix stages to the song's style (the tables below)
+adapt = false              # adjust the mix stages to the song's style (the tables below); off since November 2026:
+                           # one chain for every song, so the songs sound alike. The style is still measured and reported
 
 [character.styles.wall]    # loud, dense, steady: glue it, a little more weight, width and drum crush
 glue = { ratio = 2.0, target_gr_db = 1.8 }
