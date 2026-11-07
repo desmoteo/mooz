@@ -47,12 +47,13 @@ def drum_hits(x: np.ndarray, fs: float, lo: float, hi: float, min_gap_s: float =
 
 
 def _start(smp: np.ndarray, fs: float, lo: float, hi: float) -> int:
-    """Where a one-shot "starts" by the same rule as drum_hits (half of its peak envelope)."""
+    """Where a one-shot "starts" by the same rule as drum_hits (half of its peak envelope), and
+    never before its first frame: the filtered envelope of an abrupt sample rises ahead of it."""
     env = _band_env(np.pad(smp, ((int(0.05 * fs), 0), (0, 0))), fs, lo, hi)
     p = int(np.argmax(env))
     seg = env[max(0, p - int(0.03 * fs)) : p + 1]
     below = np.flatnonzero(seg < 0.5 * env[p])
-    return p - len(seg) + 1 + (below[-1] + 1 if below.size else 0) - int(0.05 * fs)
+    return max(0, p - len(seg) + 1 + (below[-1] + 1 if below.size else 0) - int(0.05 * fs))
 
 
 def _pitch(seg: np.ndarray, fs: float) -> float:

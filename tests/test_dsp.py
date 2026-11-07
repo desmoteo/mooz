@@ -988,3 +988,14 @@ def test_cymbal_augment_tells_bells_crashes_and_rides_apart(tmp_path):
     assert st["kinds"] == {"crash": 2, "ride": 7, "bell": 2}
     assert all(st[k]["placed"] == st["kinds"][k] for k in ("crash", "ride", "bell"))
     assert y.shape == x.shape and st["level_change_db"] > 0
+
+
+def test_a_sample_that_starts_abruptly_starts_at_its_first_frame():
+    # The filtered envelope rises before the first frame, so half its peak can come "before" the
+    # sample; as a negative index that cut an empty reference and stopped the song.
+    from rehearsal_master import augment
+
+    fs = 48000
+    t = np.arange(int(0.3 * fs)) / fs
+    abrupt = np.sin(2 * np.pi * 250 * t) * np.exp(-t / 0.05)
+    assert augment._start(np.column_stack([abrupt, abrupt]), fs, 150.0, 400.0) >= 0
