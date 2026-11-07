@@ -1,11 +1,11 @@
 # Plan: a simpler rehearsal-master
 
 Status, 7 November 2026: steps 1–4 are done (the deletions of step 1 are left to the user
-to run; the command is in the session notes); the trial of step 2 was judged better by ear, and its settings plus the blend of
-step 3 are now the defaults. Decision of 7 November: the code is kept; nothing is pruned.
-The stages that are off by default stay available as settings. Nothing that changes the sound is implemented: the audio code and
-`rehearsal.toml` are as they were. It replaces no other document: [DESIGN.md](DESIGN.md)
-still describes the pipeline as it runs today.
+to run; the command is in the session notes); the trial of step 2 was judged better by ear, and its
+settings plus the blend of step 3 are now the defaults. Decision of 7 November: the code is kept;
+nothing is pruned, and the stages that are off by default stay available as settings. Takes of
+several files (a Zoom's room and inputs) are supported since then: see "Close tracks" below. Steps
+5–9 are not started. [DESIGN.md](DESIGN.md) describes the pipeline as it runs today.
 
 ## Aims
 
@@ -424,6 +424,49 @@ band, which is code.
   bought in buzz is for the ear. Limiter and loudness range unchanged.
 - To listen: `processed/trial-gate/` against `processed/trial-blend/` on those two songs,
   intros and breaks.
+
+## Close tracks (7 November 2026)
+
+Asked for: all stems from `*TrLR.wav`; just voice, bass and guitar (both guitars if sufficiently
+audible) from each `Tr<n>.wav`; all of them used in the mix; the stems before the final master kept
+for listening; the full and the simplified bass, stems and mixes.
+
+**One deviation from the request: the room is `TrMic`, not `TrLR`.** On these recordings `TrLR` is
+not the embedded mic. It is the recorder's own mix-down: exactly 1.413 `TrMic` + 1.000 `Tr2` on all 8
+takes (residual −149 dB). Separating it would put the close track in every room stem and then in
+the mix twice. `TrMic` is the stereo embedded mic. `[multitrack] room = "TrLR"` forces the literal
+reading, and without a `TrMic` file `TrLR` is used anyway.
+
+What the 8 takes hold, on the only input in use (`Tr2`, a mono mixer feed):
+
+| stem | level (LU re the track) | used | delay to the room | polarity |
+|---|---|---|---|---|
+| voice | −2.5 to +0.7 | yes, every take | 9.6 to 11.5 ms | inverted, always |
+| bass | −6.2 to −1.4 | yes, every take | 11 ms (16 ms on one Stanza) | as is, always |
+| guitar | −26 to −20 | no: bleed on every take | no stable delay | |
+| other | −7 and −2 on 2 takes, else silent | no: not asked for | 9.6 ms, the voice's path | |
+| drums | −32 to −17 | no: not asked for | | |
+
+- **Guitar.** It never reaches the close track as anything but bleed, so on these takes the guitar
+  stem is the room's alone. The rule stays: guitar on an input is used when it is within 15 LU of
+  the track's loudest stem, and two guitars on two inputs are both kept. A mono feed cannot be split
+  into two guitars by position.
+- **`other`.** An instrument on the voice's channel on Miramare and the full Stanza. By the earlier
+  notes it may be the harmonica, not verified by ear. It stays in the room's `other` stem. Adding
+  `"other"` to `[multitrack] stems` brings the close version in.
+- **The merge is measured, not assumed.** In all bands from 50 Hz to 6.4 kHz the lined-up sum stays
+  within ±2.2 dB of the parts' powers on every take, with the whole-take delay.
+- **The short Stanza** (`261105_233934`, 47 s) is probably a false start. It is processed like the
+  rest. It is one of 8 in the medians, which a single outlier does not move.
+- **Result (8 November 2026).** Both versions of all 8 takes, with A/B files, are in
+  `processed/full/` and `processed/simple_bass/` next to the takes, the stems before the master in
+  each take's `stages/<take>/5_premix/` (they add up to the mix before the bus chain). Every master
+  is at −14.0 LUFS and −1.0 dBTP. Loudness range is 2–7 LU, 14 on the short Stanza. Two passes were
+  run so that every song's tone correction sees all 8 songs: it moves no band by more than 0.9 dB.
+  The simple bass has the same lows (within ±1.5 dB below 500 Hz) and 3.3–8.1 dB less above
+  500 Hz, where its harmonic stages were.
+- **A defect found on the way:** a drum sample that starts abruptly stopped the song (a negative
+  start cut an empty reference). Fixed with a test.
 
 ## Trying it today with settings only
 

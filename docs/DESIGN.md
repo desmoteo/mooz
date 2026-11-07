@@ -137,19 +137,25 @@ flowchart LR
     MIC --> ORIG["the original under the mix"]
 ```
 
-- **What a track holds**: the band's `Tr2` is a mixer feed: voice −1, bass −4, a mid-range
-  instrument in `other` (about 15 % of the take) −7, guitar −23, drums −25 LU against the track.
-  A stem more than `min_level_lu` under its track's loudest is bleed. When several tracks hold an
-  instrument, those within `keep_within_db` of where it stands strongest stay, so two guitars on two
-  inputs are both used, and a vocal mic's bleed of the bass amp is not. A mono track cannot be
-  split by position, so two guitars on one feed are one stem.
+- **What a track holds**: the band's `Tr2` is a mixer feed. Over the 8 takes, against the track: voice
+  −2.5 to +0.7 LU, bass −6.2 to −1.4, drums −32 to −17. Guitar is 19 to 25 LU under the track's
+  loudest stem, never above bleed. `other` is −7 and −2 LU on the two takes where it plays (Miramare
+  and the full Stanza: a mid-range instrument, 15–19 % of the take, on the voice's path) and silent
+  elsewhere. A stem more than `min_level_lu` under its track's loudest is bleed. When
+  several tracks hold an instrument, those within `keep_within_db` of where it stands strongest
+  stay, so two guitars on two inputs are both used, and a vocal mic's bleed of the bass amp is not.
+  A mono track cannot be split by position, so two guitars on one feed are one stem.
 - **Lining up**: the room hears a feed through an amp or a PA, several metres later and sometimes
-  the other way up. Phase-only cross-correlation of the two stems over the whole take gives the delay and
-  polarity, in the band where the instrument is (`align_band_hz`), and the windows where the
-  stem plays say how steady that is. On Miramare the voice is 10.02 ms later and inverted (steady in 100 %
-  of the windows), the bass 11.02 ms later (83 %). Lined up, they add +0.2 to +1.9 dB over
-  their summed powers from 200 Hz to 800 Hz and from 1.6 to 6.4 kHz. Without the polarity the voice would lose up to 1.8 dB. No clear
-  peak (`min_peak`): no shift, since an unrelated signal has nothing to cancel.
+  the other way up. Phase-only cross-correlation of the two stems over the whole take gives the
+  delay and polarity, in the band where the instrument is (`align_band_hz`), and the windows where
+  the stem plays say how steady that is. Over the 8 takes the voice is 9.6 to 11.5 ms later and
+  always inverted, the bass 11 ms later, 16 ms on one take, and never inverted. In every band from
+  50 Hz to 6.4 kHz the lined-up sum stays within ±2.2 dB of the two parts' summed powers. The steady
+  share can be low (the bass 0 % and 25 % on the two Stanza takes, the voice 58 % on one Biancaneve)
+  because a window finds a reflection rather than the direct sound. That is not a wrong delay: on the
+  take with 16 ms, 16 ms adds up and the usual 11 ms would lose 1.8 dB at 50–100 Hz
+  (`experiments/multitrack/delay_candidates.py`). Without the polarity flip the voice would lose up
+  to 1.8 dB. No clear peak (`min_peak`): no shift, since an unrelated signal has nothing to cancel.
 - **One stem**: the close stem is set against the room's by loudness, `close_share` of the two
   parts, and added to it before the chain: one chain and one fader per instrument, and everything after
   it works as on any stem. The vocal's room is turned down first, as ever. The merged stems have a cache of their
