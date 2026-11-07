@@ -1,7 +1,9 @@
 # Plan: a simpler rehearsal-master
 
-Status, 7 November 2026: step 1 (safety net) is done, apart from two deletions that wait
-for a yes; step 2 (the settings-only trial) has run and waits for the listening. Nothing that changes the sound is implemented: the audio code and
+Status, 7 November 2026: steps 1–3 are done (step 1 apart from deletions that wait for a
+yes); the trial of step 2 was judged better by ear. The blend of step 3 is in the code
+with `original_share = 0.25`; the other trial settings are still only in
+`rehearsal-trial.toml` until step 4 makes them the defaults. Nothing that changes the sound is implemented: the audio code and
 `rehearsal.toml` are as they were. It replaces no other document: [DESIGN.md](DESIGN.md)
 still describes the pipeline as it runs today.
 
@@ -169,15 +171,15 @@ All are still present.
 
 | defect | where | handled by |
 |---|---|---|
-| removed vocal room comes back through the residual | [pipeline.py:288](../rehearsal_master/pipeline.py#L288) | step 3 (decision 3) |
-| song style overrides per-song `[files]` settings (documented the other way round) | [pipeline.py:421](../rehearsal_master/pipeline.py#L421) | step 4 (decision 4: styles removed) |
-| per-song `[files."X".tracks.<track>]` does not reach the tracks based on it (`guitar_left` / `guitar_right`) | [config.py:92](../rehearsal_master/config.py#L92) | step 3 |
-| presets write different content to the same files in the shared stems cache (`_vocals_recombined.wav`, `_proc_*.wav`, `_buzz/`) | [pipeline.py:401](../rehearsal_master/pipeline.py#L401), [pipeline.py:265](../rehearsal_master/pipeline.py#L265) | step 3; `_buzz/` goes in step 4 |
+| removed vocal room comes back through the residual | [pipeline.py:288](../rehearsal_master/pipeline.py#L288) | fixed (step 3): the residual is no longer added; the original is blended |
+| song style overrides per-song `[files]` settings (documented the other way round) | [pipeline.py:421](../rehearsal_master/pipeline.py#L421) | fixed (step 3): the style is now a layer under the song's own settings |
+| per-song `[files."X".tracks.<track>]` does not reach the tracks based on it (`guitar_left` / `guitar_right`) | [config.py:92](../rehearsal_master/config.py#L92) | fixed (step 3): tracks expanded after every layer |
+| presets write different content to the same files in the shared stems cache (`_vocals_recombined.wav`, `_proc_*.wav`, `_buzz/`) | [pipeline.py:401](../rehearsal_master/pipeline.py#L401), [pipeline.py:265](../rehearsal_master/pipeline.py#L265) | fixed (step 3): work files under `<out dir>/.work/<song>/`; `_buzz/` goes in step 4 |
 | `librosa` imported but not declared as a dependency | [augment.py:409](../rehearsal_master/augment.py#L409), [note_eq.py:133](../rehearsal_master/note_eq.py#L133) | done (step 1) |
 | plain `uv run pytest` collects `experiments/` and fails | [pyproject.toml](../pyproject.toml) | done (step 1) |
 | the docs gave wrong test counts (36 and 49 for 56) | README, DESIGN | done on 5 November 2026 |
-| latent: if the loudness loop has not settled after 5 rounds, the reported gain is not the one applied | [pipeline.py:29](../rehearsal_master/pipeline.py#L29) | step 3 |
-| latent: a kit piece the balance marks as dropped is not removed from the drum bus (cannot happen with today's groups) | [pipeline.py:127](../rehearsal_master/pipeline.py#L127) | step 3 |
+| latent: if the loudness loop has not settled after 5 rounds, the reported gain is not the one applied | [pipeline.py:29](../rehearsal_master/pipeline.py#L29) | fixed (step 3) |
+| latent: a kit piece the balance marks as dropped is not removed from the drum bus (cannot happen with today's groups) | [pipeline.py:127](../rehearsal_master/pipeline.py#L127) | fixed (step 3) |
 
 ### Design weaknesses
 
@@ -192,7 +194,7 @@ All are still present.
 | no end-to-end test; `process_file` and `_tracks` hold 365 lines of orchestration, file handling and caching | the 56 tests before step 1 exercised single functions on synthetic signals | test: done (step 1); split: step 9 |
 | not a git repository; the code sits inside 170 GB of data, about 34 GB of it experiment virtualenvs, on a disk 81 % full | | git: done (step 1); disk: waiting for a yes |
 | fragile separation glue: it patches audio-separator internals and the global `torch.load`, and the dependency is only bounded from below (`>=0.47`) | [separate.py:398-410](../rehearsal_master/separate.py#L398-L410) | done (step 1): pinned, with a test |
-| batch handling: one failing file aborts the batch; `rehearsal.toml` and `--learn-balance` read from the current folder while outputs go next to the input | [cli.py:258](../rehearsal_master/cli.py#L258), [cli.py:266](../rehearsal_master/cli.py#L266) | step 3, step 6 |
+| batch handling: one failing file aborts the batch; `rehearsal.toml` and `--learn-balance` read from the current folder while outputs go next to the input | [cli.py:258](../rehearsal_master/cli.py#L258), [cli.py:266](../rehearsal_master/cli.py#L266) | fixed (step 3): per-file errors reported, the batch goes on; settings read from the recordings' folder. `--learn-balance` itself: step 6 |
 
 ### The review's seven points
 
@@ -255,19 +257,30 @@ comments.
    *Done when:* the sample levels and the hat/cymbal trade are confirmed or adjusted by ear
    (waiting for the listening). Listen above all to Vita and Abitudine Strato (the largest
    hat and cymbal changes) and to the kick and snare punch on Riempio i vuoti.
-3. **Original blend and correctness.**
-   - Add the blend (decision 3) and remove the residual add-back; the balance aims at the
-     blended mix.
-   - Settings resolved in one function, in the documented order, with track inheritance
-     applied last.
-   - Work files in a per-run folder under the output folder, not in the stems cache.
-   - A failing file is reported and the batch goes on; the exit code says so.
-   - `rehearsal.toml` read from the input's folder (the current folder as a fallback).
-   - The two latent defects in the table above.
+3. **Original blend and correctness.** Done on 7 November 2026.
+   - Done: the blend (decision 3), `[mix] original_share = 0.25`; the residual add-back and
+     `residual_gain_db` are gone. The balance measures each group in the blend and solves
+     for the gain on the stems ([pipeline.py](../rehearsal_master/pipeline.py) `_balance`).
+   - Done: settings resolved in one place ([config.py](../rehearsal_master/config.py)), in
+     the documented order, tracks expanded after every layer; the command line is a layer.
+   - Done: work files under `<out dir>/.work/<song>/`, removed when the run ends; nothing is
+     written to the stems cache any more but the stems, `key.json` and `_profile.json`.
+   - Done: a failing song is reported and the batch goes on (exit code 1 at the end);
+     `rehearsal.toml` is read from the recordings' folder, then the current one.
+   - Done: the two latent defects.
+   - Run on the five songs into `processed/trial-blend/` (the trial settings plus the
+     blend; A/B files there too). Against the trial: the original sits at −4.77 LU under the
+     stems in every song (gain −3.2 to −4.1 dB); the vocals end within 0.6 LU of their
+     target in all five (the stems' gain is larger than the change wanted, as designed:
+     −9.4 dB on the stems for −5.1 wanted on Stanza, +8.0 for +6.0 on Abitudine); the
+     limiter works less (2.0–5.4 % of the time, trial 4.3–7.4 %); loudness range up
+     0.1–0.6 LU; 2–6 kHz up 0.8–1.4 dB and 6–16 kHz up 0.2–0.8 dB (the original brings
+     back some of the top the trial lost); 4–5 minutes per song as before.
 
-   *Done when:* with every processor off the output equals the recording (null test), the
-   original measures 4.8 LU under the processed part in every song, and two presets can
-   run on one song at the same time.
+   *Done when:* with every processor off the output equals the recording (null test: yes,
+   [tests/test_pipeline.py](../tests/test_pipeline.py), within −60 dB), the original
+   measures 4.8 LU under the processed part in every song (yes), and two presets can run on
+   one song at the same time (the shared cache is no longer written to; not tried live).
 4. **Cut (prune).**
    - Delete what the "goes" column lists; park the three presets.
    - Fix the sample levels from step 2; add the 1.5 dB sample limit.

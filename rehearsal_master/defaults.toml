@@ -49,7 +49,6 @@ plan = "ensemble"          # "ensemble": every model on the whole recording, ste
 keep_models = true         # keep every model's own outputs in <cache>/models/ (24-bit FLAC, 12 dB down) for listening
 device = "auto"            # auto, cuda or cpu
 cache = true               # keep stems in <output dir>/stems/<song>/ and reuse them
-residual_gain_db = 0.0     # what the separation missed (mix - sum of stems), added back unprocessed
 refine = { enabled = false, power = 1.5, floor_db = -30.0 }  # bleed reduction: re-estimate the stems as
                            # sharpened masks on the mix (power > 1 = less bleed; too high sounds "watery")
 # demucs backend
@@ -873,6 +872,13 @@ groups = [
   { name = "hihat", stems = ["hihat"], lu = -16.0 },      # its own level: in the cymbals' group the balance pulled the hats
                                                           # down with the cymbals (on Miramare 6 dB under them, -20 LU re the kit)
 ]
+
+[mix]                      # stage 5: the processed stems with the original recording under them
+original_share = 0.25      # the original's share of the two parts' loudness (BS.1770): 0.25 puts it 4.8 LU under the
+                           # processed stems, the same on every song. It brings back what the separation and the
+                           # clean-up took out (room, bleed, buzz) at that level and keeps the stems honest; the
+                           # group balance below aims at this blend. 0 = the stems alone (what the separation
+                           # missed is lost); at most 0.5 (equal parts)
 
 [balance]                  # keep the instruments at similar levels from song to song
 enabled = true             # (after each stem's chain, before the remix): each group is pulled towards its

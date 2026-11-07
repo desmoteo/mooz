@@ -35,9 +35,9 @@ def _noise(rng, n: int, lo: float, hi: float | None = None) -> np.ndarray:
     return signal.sosfilt(signal.butter(4, edges, kind, fs=FS, output="sos"), rng.normal(0, 1, n))
 
 
-def _song() -> tuple[np.ndarray, dict[str, np.ndarray]]:
+def _song(clean: bool = False) -> tuple[np.ndarray, dict[str, np.ndarray]]:
     """A band in 12 seconds: (recording, stems). The stems sum to the recording, hiss and
-    mains hum aside (what a separation leaves in the residual)."""
+    mains hum aside (what a separation leaves in the residual); clean: exactly."""
     rng = np.random.default_rng(7)
     n = int((LEAD_S + MUSIC_S + TAIL_S) * FS)
     beats = LEAD_S + np.arange(0, MUSIC_S, 0.5)  # 120 BPM
@@ -77,9 +77,11 @@ def _song() -> tuple[np.ndarray, dict[str, np.ndarray]]:
     stems = {"kick": stereo(kick), "snare": stereo(snare), "toms": stereo(toms), "hihat": stereo(hihat, 0.8, 1.0),
              "cymbals": stereo(cymbals), "bass": stereo(bass), "guitar": stereo(guitar, 1.0, 0.7),
              "vocals": stereo(vocals), "vocal_room": stereo(vocal_room), "other": np.zeros((n, 2))}  # nobody on "other"
-    t = np.arange(n) / FS
-    hum = sum(a * np.sin(2 * np.pi * f * t) for f, a in ((50.0, 2e-3), (100.0, 1e-3), (150.0, 1e-3)))
-    mix = sum(stems.values()) + stereo(hum) + 1e-4 * rng.normal(0, 1, (n, 2))
+    mix = sum(stems.values())
+    if not clean:
+        t = np.arange(n) / FS
+        hum = sum(a * np.sin(2 * np.pi * f * t) for f, a in ((50.0, 2e-3), (100.0, 1e-3), (150.0, 1e-3)))
+        mix = mix + stereo(hum) + 1e-4 * rng.normal(0, 1, (n, 2))
     return mix, stems
 
 
@@ -88,16 +90,16 @@ def song():
     return _song()
 
 
-@pytest.mark.parametrize("preset", [None, "albini"])
-def test_process_file_runs_end_to_end_and_meets_loudness_and_peak(song, preset, tmp_path, monkeypatch):
-    mix, stems = song
-    path = tmp_path / NAME
-    sf.write(path, mix.astype(np.float32), FS, subtype="FLOAT")
-
-    def fixture_stems(x, fs, cfg, cache_dir, key):  # in place of the models: the stems, as if just separated
+def _fixture_separation(monkeypatch, mix, stems, highpass: dict | None = None):
+    """In place of the models: the given stems, written where the cache would be. The real
+    separation sees the recording after the rumble filter, so with highpass (the [highpass]
+    settings) the stems get the same filter and still add up to what is separated."""
+    def fixture_stems(x, fs, cfg, cache_dir, key):
         assert len(x) == len(mix) and fs == FS  # the whole recording goes to the separation
         cache_dir.mkdir(parents=True, exist_ok=True)
         for name, s in stems.items():
+            if highpass and highpass["enabled"]:
+                s = signal.sosfilt(signal.butter(highpass["order"], highpass["freq_hz"], "high", fs=fs, output="sos"), s, axis=0)
             sf.write(cache_dir / f"{name}.wav", s.astype(np.float32), fs, subtype="FLOAT")
         (cache_dir / "key.json").write_text(json.dumps(key))
         return separate._stems_in(cache_dir)
@@ -105,11 +107,21 @@ def test_process_file_runs_end_to_end_and_meets_loudness_and_peak(song, preset, 
     monkeypatch.setattr(separate, "separate", fixture_stems)
     monkeypatch.setattr(separate, "available", lambda backend="demucs": True)
 
-    cfg = config.for_file(config.load(None, preset), path.name)
-    cfg["output"]["mp3"] = False  # no ffmpeg needed
-    for track in cfg["tracks"].values():  # no sample library from this machine's cache
-        track["augment"]["library"]["dir"] = str(tmp_path / "no_samples")
-        track["cymbal_augment"]["dir"] = str(tmp_path / "no_samples")
+
+def _hermetic(tmp_path) -> dict:
+    """Settings that keep a test on this machine: no MP3 (ffmpeg), no sample library (the user's cache)."""
+    none = str(tmp_path / "no_samples")
+    return {"output": {"mp3": False},
+            "track_defaults": {"augment": {"library": {"dir": none}}, "cymbal_augment": {"dir": none}}}
+
+
+@pytest.mark.parametrize("preset", [None, "albini"])
+def test_process_file_runs_end_to_end_and_meets_loudness_and_peak(song, preset, tmp_path, monkeypatch):
+    mix, stems = song
+    path = tmp_path / NAME
+    sf.write(path, mix.astype(np.float32), FS, subtype="FLOAT")
+    cfg = config.for_file(config.load(None, preset, _hermetic(tmp_path)), path.name)
+    _fixture_separation(monkeypatch, mix, stems, cfg["highpass"])
 
     rep = pipeline.process_file(path, cfg)
 
@@ -133,6 +145,15 @@ def test_process_file_runs_end_to_end_and_meets_loudness_and_peak(song, preset, 
         assert np.isfinite(tracks[name]["lufs_out"]), name
     assert set(tracks["drum_bus"]["stems"]) == {"kick", "snare", "toms", "hihat", "cymbals"}
     assert np.isfinite(tracks["remix"]["remix_lufs"])
+    assert tracks["residual"]["level_db"] < -20  # the stems account for the recording (hum and hiss aside)
+    blend = tracks["blend"]  # the original under the stems at its share of the loudness: -4.8 LU for 0.25
+    share = cfg["mix"]["original_share"]
+    assert blend["original_share"] == share and share > 0
+    assert abs(blend["level_lu"] - 10 * np.log10(share / (1 - share))) < 0.01
+    assert abs((blend["original_lufs"] - blend["processed_lufs"]) - blend["level_lu"]) < 0.1
+    for g, b in tracks["balance"].items():  # measured in the blend, before and after; the stems' gain bounded
+        if "note" not in b:
+            assert abs(b["stem_gain_db"]) <= pipeline.STEM_GAIN_MAX_DB and np.isfinite(b["after_lu"]), g
 
     out = path.parent / cfg["output"]["dir"]
     saved = json.loads((out / "reports" / f"{path.stem}.json").read_text())  # the report is valid JSON
@@ -140,3 +161,57 @@ def test_process_file_runs_end_to_end_and_meets_loudness_and_peak(song, preset, 
     for f in ("reports/{0}.png", "reports/{0}_tracks.png", "stages/{0}/5_mix.flac", "stages/{0}/4_drum_bus.flac",
               "stages/{0}/2_stems/vocals.flac", "stages/{0}/character.json"):
         assert (out / f.format(path.stem)).exists(), f
+    # this run's files are gone, and the shared stems cache holds only what every preset can share
+    assert not (out / ".work").exists()
+    cache = path.parent / (cfg["output"]["stems_dir"] + separate.cache_name(cfg["stems"])) / path.stem
+    assert {f.name for f in cache.iterdir()} <= {f"{n}.wav" for n in stems} | {"key.json", "_profile.json"}
+
+
+def _everything_off(tmp_path) -> dict:
+    """Overrides that switch every processor off: every table with an `enabled` key (but the
+    separation itself), every track's EQ, ducks, sends and placement, fades, room reduction."""
+    base = config.load(None)
+
+    def off(d: dict) -> dict:
+        o = {}
+        for k, v in d.items():
+            if isinstance(v, dict) and not k.startswith("_"):
+                sub = off(v)
+                if sub:
+                    o[k] = sub
+        if "enabled" in d:
+            o["enabled"] = False
+        return o
+
+    over = off({k: v for k, v in base.items() if k not in ("tracks", "files", "plans")})
+    over.pop("output", None)
+    over["stems"] = {k: v for k, v in over.get("stems", {}).items() if k not in ("enabled", "plans")}
+    over["stems"]["vocal_room"] = {"max_reduction_db": 0.0}
+    over["trim"] = {"fade_in_s": 0.0, "fade_out_s": 0.0}  # the trim itself stays: the stems must line up with it
+    over["loudness"] = {"target_lufs": -26.0}  # far below any limiting
+    over["track_defaults"] = off(base["track_defaults"]) | {
+        "eq": [], "dynamic_eq": [], "ducks": [], "sends": [], "width": 1.0, "balance": 0.0, "pan": 0.0, "gain_db": 0.0}
+    over["tracks"] = {n: off(t) | {"eq": [], "dynamic_eq": [], "ducks": [], "sends": [], "width": 1.0, "balance": 0.0,
+                                   "pan": 0.0, "gain_db": 0.0} for n, t in base["tracks"].items()}
+    return over | _hermetic(tmp_path) | {"output": {"mp3": False, "report": False, "stages": "off"}}
+
+
+def test_with_every_processor_off_the_master_is_the_recording(tmp_path, monkeypatch):
+    """Nothing is lost: stems that sum to the recording, no processing, the original blended in,
+    the balance and the bus chain off: the master is the trimmed recording, scaled."""
+    mix, stems = _song(clean=True)
+    path = tmp_path / NAME
+    sf.write(path, mix.astype(np.float32), FS, subtype="FLOAT")
+    _fixture_separation(monkeypatch, mix, stems)
+    cfg = config.for_file(config.load(None, None, _everything_off(tmp_path)), path.name)
+    assert cfg["mix"]["original_share"] > 0 and not cfg["balance"]["enabled"] and not cfg["glue"]["enabled"]
+
+    rep = pipeline.process_file(path, cfg)
+
+    y, fs = sf.read(rep["outputs"]["wav"], dtype="float64", always_2d=True)
+    start = int(round(rep["trim"]["start_s"] * fs))
+    x = mix[start : start + len(y)]
+    gain = float(np.sum(x * y) / np.sum(y * y))
+    err = 10 * np.log10(np.sum((x - gain * y) ** 2) / np.sum(x ** 2))
+    assert err < -60, f"master differs from the recording by {err:.1f} dB"
+    assert rep["finalize"]["limiter"]["max_gr_db"] == 0.0 and rep["tracks"]["blend"]["gain_db"] is not None

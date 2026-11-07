@@ -1,7 +1,7 @@
 """The processing chain, run in order by process_file().
 
   high-pass -> hum removal -> separate (whole recording) -> trim -> [bleed reduction ->
-  per-track chain -> group balance -> sum]
+  per-track chain -> drum bus -> sum + the original recording under it -> group balance]
   -> stereo (mono bass) -> tonal EQ -> multiband compression -> saturation -> glue compression
   -> loudness gain -> clipper -> true-peak limiter -> fades
 """
@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import sys
 from pathlib import Path
 
@@ -32,7 +33,7 @@ def _finalize(x: np.ndarray, fs: int, cfg: dict) -> tuple[np.ndarray, np.ndarray
             y, clip_stats = dynamics.soft_clip(y, 10 ** ((ceiling + ccfg["headroom_db"]) / 20), ccfg["knee_db"], ccfg["oversample"])
         y, gr, lim_stats = dynamics.limit(y, fs, ceiling, lcfg["lookahead_ms"], lcfg["release_ms"], lcfg["oversample"])
         err = target - loudness.integrated(y, fs)
-        if abs(err) < 0.05:
+        if abs(err) < 0.05 or iteration == 5:
             break
         gain_db += err
     # Gain changes inside the limiter can leave a hair of inter-sample overshoot.
@@ -124,9 +125,9 @@ def _drum_bus(files: dict[str, Path], lufs: dict[str, float], fs: int, cfg: dict
         gains, stats["balance"] = cleanup.balance_gains({n: lufs.get(n) for n in members},
                                                         loudness.integrated(bus, fs), bcfg)
         for n, g in gains.items():
-            if g and n in members:
+            if n in members and g != 0.0:  # None: dropped (too quiet to be that drum)
                 bus += (-1.0 if g is None else 10 ** (g / 20) - 1.0) * read(n)
-        stats["gains_db"] = {n: ("dropped" if g is None else round(g, 1)) for n, g in gains.items() if g}
+        stats["gains_db"] = {n: ("dropped" if g is None else round(g, 1)) for n, g in gains.items() if g != 0.0}
     if dcfg["eq"]:
         grid = eq.log_grid(fs)
         bus = eq.apply_fir(bus, eq.design_fir(grid, eq.manual_curve(grid, dcfg["eq"], fs), fs, 8191))
@@ -161,14 +162,73 @@ def _drum_bus(files: dict[str, Path], lufs: dict[str, float], fs: int, cfg: dict
     return bus, stats
 
 
+STEM_GAIN_MAX_DB = 12.0  # the most the balance moves the processed part of a group
+
+
+def _balance(out: np.ndarray, original: np.ndarray, g_orig: float, processed_files: dict[str, Path], raw_of,
+             stem_lufs: dict[str, float], fs: int, bcfg: dict) -> tuple[dict[str, float | None], dict]:
+    """Group balance in the blend. Each stem is measured as it will be heard: its processed
+    part plus its share of the original (its raw stem at the blend's gain). The groups' misses
+    give the change each group needs (cleanup.balance_gains). The original's share does not
+    move, so the processed part gets the gain that yields that change once both add up in
+    phase: (1 + r) 10^(change/20) - r, r being the original's amplitude share of the group.
+    The gains are applied to out in place; returns them per processed stem (None: dropped)
+    and the report by group, with each group's level measured again afterwards."""
+    total = loudness.integrated(out + original, fs)
+    in_blend, in_orig = {}, {}
+    for name, f in processed_files.items():
+        r = raw_of(name)
+        r *= g_orig
+        in_orig[name] = loudness.integrated(r, fs)
+        r += sf.read(f, dtype="float64", always_2d=True)[0]
+        in_blend[name] = loudness.integrated(r, fs)
+        del r
+    change, report = cleanup.balance_gains(in_blend, total, bcfg)
+    groups = {spec["name"]: [m for m in spec["stems"] if m in processed_files] for spec in bcfg["groups"]}
+    gains: dict[str, float | None] = dict(change)  # stems in no group: 0.0, or None (dropped)
+    power = lambda levels, members: sum(10 ** (levels[m] / 10) for m in members if np.isfinite(levels[m]))  # noqa: E731
+    for gname, members in groups.items():
+        if not members:
+            continue
+        delta = change[members[0]]
+        pp, po = power(stem_lufs, members), power(in_orig, members)
+        r = float(np.sqrt(po / pp)) if pp > 0 else 0.0
+        lin = (1 + r) * 10 ** (delta / 20) - r  # the original's share cannot be turned down with the stems
+        gain = float(np.clip(20 * np.log10(lin) if lin > 0 else -STEM_GAIN_MAX_DB, -STEM_GAIN_MAX_DB, STEM_GAIN_MAX_DB))
+        for m in members:
+            gains[m] = gain
+        report[gname]["stem_gain_db"] = round(gain, 1)
+        report[gname]["original_share_db"] = round(20 * np.log10(r), 1) if r > 0 else None
+    for name, g in gains.items():
+        if g != 0.0:
+            out += (-1.0 if g is None else 10 ** (g / 20) - 1.0) * sf.read(processed_files[name], dtype="float64", always_2d=True)[0]
+    total = loudness.integrated(out + original, fs)
+    for gname, members in groups.items():
+        if gname not in report or not members:
+            continue
+        acc = None
+        for m in members:
+            a = raw_of(m)
+            a *= g_orig
+            if gains[m] is not None:
+                a += sf.read(processed_files[m], dtype="float64", always_2d=True)[0] * 10 ** (gains[m] / 20)
+            acc = a if acc is None else acc + a
+            del a
+        report[gname]["after_lu"] = round(loudness.integrated(acc, fs) - total, 1)
+        del acc
+    return gains, report
+
+
 def _tracks(y: np.ndarray, fs: int, cfg: dict, stems: dict[str, Path] | None, start: int, end: int,
-            work: Path, details: dict, stage: stages.StageWriter, profiles: dict | None = None,
+            work: Path, stems_dir: Path, details: dict, stage: stages.StageWriter, profiles: dict | None = None,
             targets: dict | None = None, tempo_bpm: float | None = None) -> tuple[np.ndarray, dict]:
     """Stages 1-5 for the stems: (3) drum clean-up, (2) studio processing of every
-    stem, (4) the drum bus, (5) level balance and sum (plus what the separation
-    missed). Without stems the "mix" chain runs on y. details collects per-track
-    data for the tracks report; stage writes each stage for listening. profiles:
-    each stem's stage-0 profile; targets: each instrument's median profile."""
+    stem, (4) the drum bus, (5) the sum with the original recording under it and the
+    level balance. Without stems the "mix" chain runs on y. work: this run's folder for
+    intermediate files; stems_dir: the song's separation cache (the buzz library sits next
+    to it). details collects per-track data for the tracks report; stage writes each
+    stage for listening. profiles: each stem's stage-0 profile; targets: each
+    instrument's median profile."""
     profiles, targets = profiles or {}, targets or {}
     mix_lufs = loudness.integrated(y, fs)
     if stems is None:
@@ -187,9 +247,9 @@ def _tracks(y: np.ndarray, fs: int, cfg: dict, stems: dict[str, Path] | None, st
             sf.write(stems[n], a, fs, subtype="FLOAT")
         del refined
         read = lambda f: sf.read(f, dtype="float64", always_2d=True)[0]  # noqa: E731  (already trimmed)
+    original = y.copy()  # the recording as prepared: blended under the processed stems in stage 5
     total = float(np.mean(y**2)) + 1e-20
     stats, processed_files, stem_lufs = {}, {}, {}
-    loose = np.zeros_like(y)  # silent stems, added back as they are
     # Hit triggers for the ducks and gates, from the unprocessed kick/snare/tom stems (or the
     # whole drum stem with the demucs backend); those stems are processed first.
     sources = {src: (src if src in stems else "drums") for src in effects.TRIGGER_BANDS}
@@ -202,12 +262,12 @@ def _tracks(y: np.ndarray, fs: int, cfg: dict, stems: dict[str, Path] | None, st
     zcfg = cfg["buzz"]
     w_buzz = None
     if zcfg["enabled"] and any(n in stems for n in zcfg["stems"]):
-        library = work.parent / "_buzz"
+        library = stems_dir.parent / "_buzz"
         library.mkdir(parents=True, exist_ok=True)
         idle_src = [triggers[k] for k in ("kick", "toms") if k in triggers]
         if idle_src:
             idle = effects._hold(np.max(idle_src, axis=0) > 0.08, fs, 0.3, 2.0) < 0.5
-            np.save(library / f"{work.name}.npy",
+            np.save(library / f"{stems_dir.name}.npy",
                     cleanup.buzz_frames({n: read(stems[n]) for n in ("hihat", "cymbals") if n in stems}, idle, fs, zcfg))
         w_buzz = cleanup.buzz_fingerprint(library, zcfg)
         stats["buzz"] = {"learnt_from_songs": len(list(library.glob("*.npy"))), "fingerprint": w_buzz is not None}
@@ -218,9 +278,8 @@ def _tracks(y: np.ndarray, fs: int, cfg: dict, stems: dict[str, Path] | None, st
         tcfg = cfg["tracks"].get(name, cfg["track_defaults"])
         if not np.isfinite(loudness.integrated(raw, fs)):
             # nothing in it (below the loudness gate everywhere), e.g. no "other" instrument in this
-            # song: add it back as it is, no chain, and leave it out of the tracks report
+            # song: no chain, left out of the tracks report (it is in the original's share)
             stats[name] = {"silent": True}
-            loose += raw
             continue
         st: dict = {}
         detail = details[name] = effects.begin_detail(raw, fs)
@@ -268,6 +327,7 @@ def _tracks(y: np.ndarray, fs: int, cfg: dict, stems: dict[str, Path] | None, st
     del triggers
     # Stage 4: the drum kit as one instrument
     bus, stats["drum_bus"] = _drum_bus(processed_files, stem_lufs, fs, cfg)
+    kit_members = stats["drum_bus"].get("stems", []) if bus is not None else []
     if bus is not None:
         stage.write("4_drum_bus", bus, fs)
         for n in stats["drum_bus"]["stems"]:
@@ -278,46 +338,74 @@ def _tracks(y: np.ndarray, fs: int, cfg: dict, stems: dict[str, Path] | None, st
         stem_lufs["drum_bus"] = loudness.integrated(bus, fs)
         stats["drum_bus"]["lufs_out"] = round(stem_lufs["drum_bus"], 1)
         del bus
-    # Stage 5: everything together, the groups (vocals, guitars, bass, drums) balanced
-    residual_lufs = loudness.integrated(y, fs)
-    if not np.isfinite(residual_lufs):
-        residual_lufs = -70.0  # below the gate: effectively nothing missed
+    # Stage 5: everything together. The processed stems are summed; the original recording goes
+    # under them at [mix] original_share of the two parts' loudness (what the separation and the
+    # clean-up took out comes back at that level, nothing else); the groups (vocals, guitars,
+    # bass, drums) are balanced so that they sit at their targets in that blend.
+    residual_lufs = loudness.integrated(y, fs)  # what the separation missed (mix - stems): reported, not added
     stats["residual"] = {"level_db": round(float(10 * np.log10((np.mean(y**2) + 1e-20) / total)), 1),
-                         "lufs_in": round(residual_lufs, 1),
-                         "lufs_out": round(residual_lufs + scfg["residual_gain_db"], 1)}
-    out = y * 10 ** (scfg["residual_gain_db"] / 20) + loose
+                         "lufs": round(residual_lufs, 1) if np.isfinite(residual_lufs) else None}
     del y
+    out = np.zeros_like(original)
     for f in processed_files.values():
         out += sf.read(f, dtype="float64", always_2d=True)[0]
     unbalanced = loudness.integrated(out, fs)
+    share = cfg["mix"]["original_share"]
+    if not 0.0 <= share <= 0.5:
+        raise ValueError(f"mix.original_share must be between 0 and 0.5, not {share}")
+    orig_lufs = loudness.integrated(original, fs)
+    g_orig, level_lu = 0.0, None
+    if share > 0 and np.isfinite(orig_lufs) and np.isfinite(unbalanced):
+        level_lu = 10 * np.log10(share / (1 - share))  # the original's loudness against the processed stems
+        g_orig = 10 ** ((unbalanced + level_lu - orig_lufs) / 20)
+    original *= g_orig
+    stats["blend"] = {"original_share": share, "level_lu": None if level_lu is None else round(level_lu, 2),
+                      "gain_db": None if g_orig == 0 else round(20 * np.log10(g_orig), 1),
+                      "processed_lufs": round(unbalanced, 1),
+                      "original_lufs": None if g_orig == 0 else round(orig_lufs + 20 * np.log10(g_orig), 1)}
     bcfg = cfg["balance"]
+    gains: dict[str, float | None] = {}
     if bcfg["enabled"]:
-        gains, stats["balance"] = cleanup.balance_gains(stem_lufs, unbalanced, bcfg)
+        raw_of = lambda n: sum(read(stems[m]) for m in (kit_members if n == "drum_bus" else [n]))  # noqa: E731
+        gains, stats["balance"] = _balance(out, original, g_orig, processed_files, raw_of, stem_lufs, fs, bcfg)
         for name, g in gains.items():
-            if g == 0.0 or name not in processed_files:
-                continue
-            p = sf.read(processed_files[name], dtype="float64", always_2d=True)[0]
-            out += (-1.0 if g is None else 10 ** (g / 20) - 1.0) * p
-            (stats["drum_bus"] if name == "drum_bus" else stats[name])["balance_gain_db"] = (
-                "dropped" if g is None else round(g, 1))
+            if g != 0.0:
+                (stats["drum_bus"] if name == "drum_bus" else stats[name])["balance_gain_db"] = (
+                    "dropped" if g is None else round(g, 1))
+    out += original
+    del original
     rd = cfg["rider"]
     voc = [n for n in rd["stems"] if n in processed_files]
     if rd["enabled"] and voc:
-        g_of = lambda n: 0.0 if not bcfg["enabled"] else (gains.get(n) or 0.0)  # noqa: E731
+        g_of = lambda n: gains.get(n) or 0.0  # noqa: E731
         v = sum(sf.read(processed_files[n], dtype="float64", always_2d=True)[0] * 10 ** (g_of(n) / 20) for n in voc)
         out, stats["rider"] = _ride(out, v, fs, rd)
         del v
-    for f in processed_files.values():
-        f.unlink(missing_ok=True)
-    if rcfg["enabled"]:
-        for f in stems.values():
-            f.unlink(missing_ok=True)
     stats["remix"] = {"mix_lufs": round(mix_lufs, 1), "unbalanced_lufs": round(unbalanced, 1),
                       "remix_lufs": round(loudness.integrated(out, fs), 1)}
     return out, stats
 
 
 def process_file(path: Path, cfg: dict, *, analyze_only: bool = False, ab: bool = False) -> dict:
+    """One recording through the whole chain; returns the report. cfg: from config.for_file()."""
+    if analyze_only:
+        return _process(path, cfg, None, True, ab)
+    # this run's intermediate files live under the output folder (the preset's), never in the
+    # shared stems cache, so two presets can run on one song at the same time
+    work = path.parent / cfg["output"]["dir"] / ".work" / path.stem
+    shutil.rmtree(work, ignore_errors=True)
+    work.mkdir(parents=True)
+    try:
+        return _process(path, cfg, work, False, ab)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+        try:
+            work.parent.rmdir()  # .work itself, when no other run is using it
+        except OSError:
+            pass
+
+
+def _process(path: Path, cfg: dict, work: Path | None, analyze_only: bool, ab: bool) -> dict:
     x, fs = sf.read(path, dtype="float64", always_2d=True)
     if x.shape[1] > 2:
         print(f"  note: {x.shape[1]} channels, using the first two", file=sys.stderr)
@@ -398,7 +486,7 @@ def process_file(path: Path, cfg: dict, *, analyze_only: bool = False, ab: bool 
                     targets[n] = targets[ps["input"]]
         vr = scfg["vocal_room"]
         if vr["recombine"] and {"vocals", "vocal_room"} <= set(stems):
-            out = stems_dir / "_vocals_recombined.wav"
+            out = work / "_vocals_recombined.wav"
             rep["vocal_room"] = cleanup.recombine_room(stems["vocals"], stems.pop("vocal_room"), out, vr)
             stems["vocals"] = out
             for d in (prof["stems"], targets):  # its profile: the recombined vocal's
@@ -417,13 +505,13 @@ def process_file(path: Path, cfg: dict, *, analyze_only: bool = False, ab: bool 
         rep["character"] = character.characterise(y, fs, raw, trig)
         del raw, trig
         style = rep["character"]["style"]
-        if ccfg["adapt"] and style in ccfg["styles"]:
-            cfg = config._merge(cfg, ccfg["styles"][style], f"character.styles.{style}")
+        if ccfg["adapt"] and style in ccfg["styles"]:  # the style's table, under the song's own settings
+            cfg = config.for_file(cfg, path.name, style)
         stage.json("character", rep["character"] | {"stems": rep.get("stem_profiles", {})})
     if stems:
         stage.link_raw(stems_dir)
     if not analyze_only:
-        y, rep["tracks"] = _tracks(y, fs, cfg, stems, start, end, stems_dir, details, stage, profiles, targets,
+        y, rep["tracks"] = _tracks(y, fs, cfg, stems, start, end, work, stems_dir, details, stage, profiles, targets,
                                    rep.get("character", {}).get("tempo_bpm"))
 
     # Stereo

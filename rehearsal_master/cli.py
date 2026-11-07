@@ -7,6 +7,7 @@ import os
 import shutil
 import sys
 import time
+import traceback
 from pathlib import Path
 
 from . import config, pipeline
@@ -66,7 +67,7 @@ def _print(rep: dict) -> None:
                       + (f" · parallel mix {par['mix']:.2f}" if par else "")
                       + (f" · room ({'+'.join(room['stems'])}) at {room['level_lu']:+.0f} LU" if room else ""))
             continue
-        if name in ("remix", "balance", "buzz", "rider"):
+        if name in ("remix", "balance", "buzz", "rider", "residual", "blend"):
             continue
         parts = []
         if st.get("silent"):
@@ -136,12 +137,21 @@ def _print(rep: dict) -> None:
         if "transient" in st:
             parts.append(f"transient {st['transient']['max_boost_db']:+.1f}/{-st['transient']['max_cut_db']:+.1f}")
         print(f"  [{name}] " + " · ".join(parts or ["unchanged"]))
+    blend = tracks.get("blend")
+    if blend and blend.get("gain_db") is not None:
+        print(f"  original  {100 * blend['original_share']:.0f}% of the loudness: {blend['level_lu']:+.1f} LU under the "
+              f"stems (gain {blend['gain_db']:+.1f} dB)")
+    res = tracks.get("residual")
+    if res:
+        print(f"  residual  what the separation missed: {res['level_db']:+.1f} dB re the mix (in the original's share)")
     rider = tracks.get("rider")
     if rider and "avg_up_db" in rider:
         print(f"  rider     vocals up {rider['avg_up_db']:.1f} dB on average where the band is dense "
               f"(max +{rider['max_up_db']:.1f}, -{rider['max_down_db']:.1f}; up >1 dB {rider['riding_up_pct']:.0f}% of the time)")
     for g, b in tracks.get("balance", {}).items():
-        note = b.get("note") or f"{b['level_lu']:+.1f} -> {b['after_lu']:+.1f} LU (target {b['target_lu']:+.1f}), gain {b['gain_db']:+.1f} dB"
+        note = b.get("note") or (f"{b['level_lu']:+.1f} -> {b['after_lu']:+.1f} LU (target {b['target_lu']:+.1f}), "
+                                 f"{b['gain_db']:+.1f} dB wanted" + (f", {b['stem_gain_db']:+.1f} dB on the stems"
+                                                                      if "stem_gain_db" in b else ""))
         print(f"  balance   {g:<8} {note}")
     if "eq_db" in rep:
         print("  EQ        " + "  ".join(f"{f}:{g:+.1f}" for f, g in rep["eq_db"].items()))
@@ -203,7 +213,10 @@ def _learn_balance(reports: Path, cfg: dict) -> None:
         ref = t.get("remix", {}).get("unbalanced_lufs")
         if ref is not None:
             for g in cfg["balance"]["groups"]:
-                if g["name"] == "drums" and "drum_bus" in t and t["drum_bus"].get("lufs_out") is not None:
+                measured = t.get("balance", {}).get(g["name"], {}).get("level_lu")  # as heard, in the blend
+                if measured is not None:
+                    v = measured
+                elif g["name"] == "drums" and "drum_bus" in t and t["drum_bus"].get("lufs_out") is not None:
                     v = t["drum_bus"]["lufs_out"] - ref
                 else:
                     v = level(t, g["stems"], ref)
@@ -245,7 +258,8 @@ def main(argv: list[str] | None = None) -> None:
         _run_in_memory_scope()
     ap = argparse.ArgumentParser(prog="rehearsal-master", description=__doc__)
     ap.add_argument("paths", nargs="*", type=Path, default=[Path(".")], help="WAV files or folders (default: current folder)")
-    ap.add_argument("-c", "--config", type=Path, help="settings file (default: ./rehearsal.toml if present)")
+    ap.add_argument("-c", "--config", type=Path,
+                    help="settings file (default: rehearsal.toml in the recordings' folder, else in the current one)")
     ap.add_argument("--target", type=float, metavar="LUFS", help="override loudness.target_lufs")
     ap.add_argument("--analyze", action="store_true", help="only measure and show the planned EQ, write nothing")
     ap.add_argument("--ab", action="store_true", help="also write <name>_AB.wav, alternating original/processed at equal loudness")
@@ -255,26 +269,37 @@ def main(argv: list[str] | None = None) -> None:
                     help="print balance targets learnt from the songs' reports (median, outliers removed), then exit")
     args = ap.parse_args(argv)
 
-    cfg_path = args.config or (Path("rehearsal.toml") if Path("rehearsal.toml").exists() else None)
-    cfg = config.load(cfg_path, args.preset)
+    folder = args.paths[0] if args.paths[0].is_dir() else args.paths[0].parent  # the recordings' folder
+    cfg_path = args.config or next((d / "rehearsal.toml" for d in (folder, Path(".")) if (d / "rehearsal.toml").exists()), None)
+    overrides: dict = {}
     if args.target is not None:
-        cfg["loudness"]["target_lufs"] = args.target
+        overrides["loudness"] = {"target_lufs": args.target}
     if args.no_mp3:
-        cfg["output"]["mp3"] = False
+        overrides["output"] = {"mp3": False}
+    cfg = config.load(cfg_path, args.preset, overrides)
 
     if args.learn_balance:
-        _learn_balance(Path(".") / cfg["output"]["dir"] / "reports", cfg)
+        _learn_balance(folder / cfg["output"]["dir"] / "reports", cfg)
         return
     files = _collect(args.paths, cfg["output"]["dir"])
     if not files:
         sys.exit("no audio files found")
     print(f"settings: {cfg_path or 'built-in defaults'}" + (f" + preset {args.preset}" if args.preset else ""))
+    failed = []
     for f in files:
         print(f"\n{f.name}")
         t0 = time.time()
-        rep = pipeline.process_file(f, config.for_file(cfg, f.name), analyze_only=args.analyze, ab=args.ab)
+        try:
+            rep = pipeline.process_file(f, config.for_file(cfg, f.name), analyze_only=args.analyze, ab=args.ab)
+        except Exception as e:  # one song's failure does not stop the others
+            traceback.print_exc()
+            print(f"  FAILED after {time.time() - t0:.0f}s: {type(e).__name__}: {e}", file=sys.stderr)
+            failed.append(f.name)
+            continue
         _print(rep)
         print(f"  ({time.time() - t0:.0f}s)")
+    if failed:
+        sys.exit(f"\n{len(failed)} of {len(files)} failed: {', '.join(failed)}")
 
 
 if __name__ == "__main__":

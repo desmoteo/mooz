@@ -2,13 +2,12 @@
 # plus the changes below, written to processed/trial/ so the current masters stay for A/B.
 #   uv run rehearsal-master -c rehearsal-trial.toml        (twice: the tone library of a new
 #   output folder fills up during the first pass)
-# Not in this trial: the original recording blended in (needs code, step 3).
 
 [loudness]
 target_lufs = -14.0
 
-[stems]
-residual_gain_db = -3.0
+[mix]
+original_share = 0.25
 
 [tracks.guitar]
 width = 0.8

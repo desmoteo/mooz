@@ -69,7 +69,8 @@ In `processed/` (or the preset's folder), for every song:
    split in two by where their amps stood), bass, kick, snare, toms, hi-hat, cymbals (two
    DrumSep models averaged per piece), other. All from the whole recording, with weights chosen
    on rehearsal-room test songs ([experiments/sep_bench](experiments/sep_bench)). What the
-   separation misses is added back. Every model's own outputs are kept for listening.
+   separation misses stays in the recording, which is blended under the stems (7). Every
+   model's own outputs are kept for listening.
 3. **Characterise** (stage 0): loudness curve, sections, contrast, build-up, density, tempo,
    drum and vocal activity, guitar distortion → a style that adjusts the mix stages. And
    every raw stem, before any clean-up: level, noise floor, tone, brightness, punch, compared
@@ -84,7 +85,9 @@ In `processed/` (or the preset's folder), for every song:
    EQ, dynamics and harmonics of a good close-miked track of that instrument (EQ choices: see
    *EQ references*). The expanders clean down to each stem's measured noise floor.
 6. **Drum bus** (stage 4): kit pieces balanced against each other, glue and parallel compression.
-7. **Mix and master** (stage 5): instruments placed and balanced (consistent from song to song,
+7. **Mix and master** (stage 5): the original recording under the processed stems at a quarter
+   of the loudness (`[mix] original_share`: what the separation and the clean-up took out is still
+   there, at a known level), instruments placed and balanced in that blend (consistent from song to song,
    blended with how mix engineers balance a band: voice up, drums down a little), guitars
    making room for the voice's words, the low end widening gradually, the same overall tone
    in every song,
@@ -131,6 +134,7 @@ Put changes in `rehearsal.toml` (only the keys you change; every option is expla
 
 | it sounds… | try |
 |---|---|
+| too much of the room recording / too processed | `[mix] original_share = 0.15` (drier, the stems in front) .. `0.35` (closer to the recording; 0 = stems only) |
 | muddy / boxy | `eq.strength = 0.9` |
 | too bright / not warm enough | `eq.tilt_db_per_oct = -2.3`; more guitar saturation `[tracks.guitar] saturator = { mix = 0.5 }` |
 | vocals too roomy / too dry | `[stems.vocal_room] max_reduction_db = 9.0` (0 = as recorded; default 6) |

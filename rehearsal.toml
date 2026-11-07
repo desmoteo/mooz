@@ -5,8 +5,8 @@
 [loudness]
 target_lufs = -14.0          # where streaming and phones play (-16 kept more punch, -12 is "radio loud")
 
-[stems]
-residual_gain_db = -3.0      # what the separation missed (room, bleed), added back 3 dB down: a drier, cleaner mix
+[mix]
+original_share = 0.25        # the original recording under the processed stems: a quarter of the loudness
 
 [tracks.guitar]
 width = 0.8                  # wider guitars (default 0.6: the masters were nearly mono, L/R correlation 0.94)

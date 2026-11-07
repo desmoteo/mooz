@@ -272,12 +272,14 @@ def plot_tracks(png: Path, rep: dict, details: dict[str, dict], cfg: dict) -> No
     from .separate import describe
 
     sep = f"separated with {describe(cfg['stems'])}" if remix else "no separation: one chain on the whole mix"
-    res = tstats.get("residual")
+    res, blend = tstats.get("residual"), tstats.get("blend")
     fig.text(0.06, 1 - 0.25 / fig.get_figheight(),
              f"{rep['title']}  ·  per-track processing" + (f"  ·  {rep['date']}" if rep["date"] else ""),
              fontsize=13, fontweight="bold", color=INK, va="top")
-    sub = sep + (f"\nresidual (what separation missed) {_num(res['level_db'])} dB re mix, added back unprocessed"
-                 if res else "")
+    sub = sep + (f"\nresidual (what separation missed) {_num(res['level_db'])} dB re mix" if res else "")
+    if blend and blend.get("gain_db") is not None:
+        sub += (f"; the original recording under the stems at {100 * blend['original_share']:.0f} % of the loudness "
+                f"({blend['level_lu']:+.1f} LU)")
     fig.text(0.06, 1 - 0.55 / fig.get_figheight(), sub, fontsize=8.5, color=INK2, va="top", linespacing=1.5)
 
     # Remix levels: each stem's loudness relative to the whole, before and after its chain

@@ -13,8 +13,10 @@ original recording blended in, quieter samples) is in [PLAN.md](PLAN.md).
 - **Measure, then act.** Every adaptive step is driven by a measurement of the song itself
   (loudness, spectrum, hits, hum, stereo positions, buzz, each stem's profile), not by fixed
   assumptions.
-- **Nothing is lost.** Stems sum back to the recording; what the separation misses (the
-  residual) is added back unprocessed. Masks and band splits are built to reconstruct exactly.
+- **Nothing is lost.** Stems sum back to the recording, and the recording itself is blended
+  under the processed stems (a quarter of the loudness, `[mix] original_share`): what the
+  separation and the clean-up take out is still there, at a known level. Masks and band splits
+  are built to reconstruct exactly.
 - **Each stage is audible.** Stages 0–5 are written to disk, so every decision can be heard
   and checked in isolation.
 - **Consistent across songs.** Instrument levels and tones are pulled towards targets learnt
@@ -33,7 +35,7 @@ flowchart TD
     PREP --> SEP[("Stem separation<br/>GPU · cached per song")]
     SEP --> S0["0 · Characterise<br/>loudness curve · sections · contrast · arc<br/>density · tempo · drum/vocal activity → style"]
     S0 -. "style overrides" .-> SET[["mix settings<br/>(defaults · rehearsal.toml · preset · style)"]]
-    SEP --> S1["1 · Raw stems<br/>vocals · vocal_room · guitar · bass · kit pieces · other<br/>+ residual"]
+    SEP --> S1["1 · Raw stems<br/>vocals · vocal_room · guitar · bass · kit pieces · other"]
     S1 --> PR["0 · Stem profiles<br/>level · noise floor · tone · punch<br/>vs the median of all songs"]
     PR -. "expander threshold<br/>tone match · attack amount" .-> PAR[["per-stem parameters"]]
     PAR -.-> CL & S3 & S2
@@ -46,7 +48,7 @@ flowchart TD
     MT --> Q2{"kit piece?"}
     Q2 -- yes --> S4["4 · Drum bus<br/>kit balance · EQ · glue · parallel compression"]
     Q2 -- no --> S5
-    S4 --> S5["5 · Mix<br/>group balance · sum + residual<br/>mono bass · tonal EQ · multiband · tape · glue"]
+    S4 --> S5["5 · Mix<br/>sum + the original (¼) · group balance<br/>mono bass · tonal EQ · multiband · tape · glue"]
     SET -.-> S4
     SET -.-> S5
     S5 --> MA["Master<br/>loudness target ⟳ clipper ⟳ true-peak limiter · fades"]
@@ -445,9 +447,22 @@ pattern method as the mix balance, below), summed, and given the bus chain:
   gets dense, the voice-to-band ratio in the words' band (1–4 kHz, 400 ms windows) falls
   below its usual value. There the vocal goes up (0.6 × the shortfall, ≤ +3 dB), and a
   little down (≤ 1.5 dB) where it stands out. Only while singing, smoothed like a slow hand.
-- **Group balance**: each group's loudness (vocals, guitars, bass, drums) relative to the
-  remix is compared with its target. The gain is how far it misses, minus the median miss of
+- **Original blend**: the processed stems are summed and the recording itself (trimmed,
+  rumble and hum removed) is put under them, loudness-matched so that it carries
+  `original_share` of the two parts' loudness: 10·log10(share / (1 − share)) LU against the
+  stems, −4.8 LU for the default 0.25, the same on every song. What the separation and the
+  clean-up took out (room, bleed, buzz) comes back at that level and nothing else does;
+  there is no residual add-back. The blend sits before the bus chain, so the tape's phase
+  shift applies to both parts alike. It bounds the clean-up: however deep a gate goes on a
+  stem, that sound drops by at most about 9 dB in the mix.
+- **Group balance**: each group's loudness (vocals, guitars, bass, drums) is measured as it
+  will be heard, in the blend (its processed part plus its raw stems at the blend's gain),
+  relative to the whole, and compared with its target. The gain is how far it misses, minus the median miss of
   all groups, times 0.9, limited to ±6 dB.
+  - *In the blend:* the original's share of a group does not move, so the processed part
+    gets the gain that yields the wanted change once both add up in phase,
+    (1 + r) 10^(change/20) − r with r the original's amplitude share of the group, at most
+    ±12 dB; the levels are measured again afterwards and reported.
   - *Pattern, not shares:* matching groups relative to each other avoids an impossible exact
     fit (loudness is not additive). It is exact in one pass: a group's own loudness scales
     with its gain, and the total moves every group equally. Integrated loudness gates each
@@ -479,7 +494,7 @@ pattern method as the mix balance, below), summed, and given the bus chain:
 
 ```mermaid
 flowchart LR
-    SUM["stems + drum bus<br/>balanced, + residual"] --> MONO["mono below 50 Hz,<br/>widening to 400 Hz"] --> TEQ["tonal EQ<br/>(measured on the recording)"]
+    SUM["stems + drum bus<br/>+ the original (¼), balanced"] --> MONO["mono below 50 Hz,<br/>widening to 400 Hz"] --> TEQ["tonal EQ<br/>(measured on the recording)"]
     TEQ --> MB["multiband<br/>4 zero-phase bands"] --> TAPE["tape<br/>CHOW Tape Model"] --> GLUE["glue"]
     GLUE --> CON["consistency EQ<br/>towards the songs' median tone"] --> MIX5[/"5_mix saved"/]
     MIX5 --> GAIN["gain to target"] --> CLIP["soft clipper<br/>4× oversampled"] --> LIM["true-peak limiter<br/>look-ahead"]
@@ -537,6 +552,7 @@ hot at normal bias (head bump, softer top). Comparison excerpts are in
 | vocal rider | 400 ms voice-to-band level ratio in 1–4 kHz vs its median while singing; clipped, smoothed |
 | glue target | bisection on the threshold percentile for the target mean gain reduction while playing |
 | vocal recombination | dry + room from the de-reverb model; Wiener-like gain dry/(dry + room) smoothed in time and frequency, floored at −6 dB |
+| original blend | the recording loudness-matched to the processed stems at 10·log10(share/(1−share)) LU, added before the bus chain; the balance solves for the stems' gain in the blend |
 
 ## 5. Configuration
 
@@ -603,6 +619,7 @@ processed/<preset dir>/
   stages/<song>/                    character.json, 1_raw → cache, 2_stems/, 3_drum_cleanup/,
                                     2_stems/samples/ (the drum samples), 4_drum_bus, 5_mix
                                     (FLAC, all −12 dB so nothing clips)
+processed/<preset dir>/.work/<song>/  this run's intermediate files, removed when it ends
 processed/stems/<song>/             separation cache (whole recording, float WAV), _profile.json,
                                     _split_*.wav (pan split, when on)
 processed/stems/_buzz/              buzz library (one file per song)
@@ -721,7 +738,7 @@ Literature on improving stems and remixing them, compared with these strategies:
 
 ## 11. Limits
 
-- Separation of a room recording is imperfect; the residual and the clean-up keep it honest,
+- Separation of a room recording is imperfect; the original blend and the clean-up keep it honest,
   but stems are not studio isolation.
 - The two guitars can only be split when their amps stood apart; when they overlap in time
   and frequency, each moment goes to the dominant position.
