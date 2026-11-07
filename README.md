@@ -162,6 +162,7 @@ Put changes in `rehearsal.toml` (only the keys you change; every option is expla
 | snare dull | `[tracks.snare] transient = { attack = [0.3, 1.0, 0.3] }` |
 | cymbals harsh / dull / thin | `[tracks.cymbals]` EQ: the 3.5 kHz cut, the 7 kHz shelf, the 1.6 kHz body (+2.5 dB); `tone_match = { reference = 0.5 }` for less of the studio tone (hi-hat too) |
 | hi-hat choked on kicks | `[tracks.hihat]` duck `depth_db` (default 5) |
+| snare buzz in intros and breaks | `[tracks.hihat] kit_gate = { depth_db = 20.0 }` (same for cymbals; default 15); the original recording follows that gate in 1.2–12 kHz (`[mix] kit_gate_band_hz`; `[]` leaves the original untouched) |
 | snare buzz audible in the hats / cymbals | `[buzz] stems = ["snare", "toms", "hihat", "cymbals"]` (take it from them too; it was heard as artifacts, so by default only snare and toms); thinner after it: `stem_floor_db = { hihat = -6.0, cymbals = -6.0 }`; cymbals too far back: `[drum_bus.balance] offsets = { cymbals = 4.0 }` (default 1.5) |
 | bass boomy / thin | `[tracks.bass]` the 100 Hz low shelf (default +2.5 dB) |
 | a stem sounds different from song to song | its `tone_match = { strength = 0.9 }` (0 = off); `transient = { adapt = true }` for the attack |

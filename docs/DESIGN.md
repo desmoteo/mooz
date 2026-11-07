@@ -277,8 +277,10 @@ flowchart LR
   band (1.2–12 kHz) goes 10 dB further down between hits. Measured as the median 10 ms
   level: −15 dB between hits on Stanza and −16 dB on Abitudine, with the hits unchanged
   (Stanza) or 1.6 dB lower (Abitudine's soft early hits).
-- **Kit gate** (hi-hat, cymbals): 10 dB down while the drummer is not playing (no
-  kick/snare/tom hit within 2–3 s), unless the stem's own sharp, strong hits open it.
+- **Kit gate** (hi-hat, cymbals): 15 dB down while the drummer is not playing (no
+  kick/snare/tom hit within 1.5–2 s; 10 dB and 2–3 s until November 2026), unless the
+  stem's own sharp, strong hits open it. The original recording follows this gate in the
+  buzz band (stage 5).
 - **Gap expander** (bass, guitar): with `adapt`, its threshold sits 4 dB above the stem's
   measured noise floor, when that floor is 25–35 dB under the playing level; a floor closer
   than that is quiet playing, not noise (a stem that never pauses), and the setting stays.
@@ -462,7 +464,13 @@ pattern method as the mix balance, below), summed, and given the bus chain:
   clean-up took out (room, bleed, buzz) comes back at that level and nothing else does;
   there is no residual add-back. The blend sits before the bus chain, so the tape's phase
   shift applies to both parts alike. It bounds the clean-up: however deep a gate goes on a
-  stem, that sound drops by at most about 9 dB in the mix.
+  stem, that sound drops by at most about 9 dB in the mix. One exception, for the snare buzz:
+  the original follows the kit gate of the hi-hat and cymbal stems in the buzz's band
+  (`[mix] kit_gate_band_hz`, 1.2–12 kHz): while the drummer is not playing, that band of the
+  original goes down by the gate's own curve (open as soon as either stem's gate is), so
+  the buzz the gate takes from the stems does not come back through the blend. The band
+  holds the guitars' and voice's top too, so those passages of the blend are a little
+  less bright.
 - **Group balance**: each group's loudness (vocals, guitars, bass, drums) is measured as it
   will be heard, in the blend (its processed part plus its raw stems at the blend's gain),
   relative to the whole, and compared with its target. The gain is how far it misses, minus the median miss of

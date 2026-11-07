@@ -621,7 +621,7 @@ dynamic_eq = [
 # the buzz removal (stage 3) takes most of it, and hats often land with the kick: only a small dip
 ducks = [{ source = "kick", fmin_hz = 2000.0, fmax_hz = 8000.0, depth_db = 2.0, release_ms = 120.0, purpose = "cleanup" }]
 # in intros/breaks without drums the stem is only the snare resonating with bass and guitars
-kit_gate = { enabled = true, depth_db = 10.0, hold_s = 2.0, own_onset_db = 10.0, own_hold_s = 1.5 }
+kit_gate = { enabled = true, depth_db = 15.0, hold_s = 1.5, own_onset_db = 10.0, own_hold_s = 1.5 }  # 10 dB / 2 s until November 2026
 transient = { enabled = true, crossovers_hz = [2000.0], attack = [0.0, 0.3], sustain = [0.0, 0.0], max_db = 6.0, adapt = false }  # (as the cymbals)
 # studio hi-hat one-shots on its hits (the separated hats lost their stick attack and top): single real hits from
 # raw close mics (tools/build_drum_samples.py, an average of noisy hats would be a dull blur), the one nearest in
@@ -647,7 +647,7 @@ dynamic_eq = [  # only the loudest crashes / sizzle
 ]
 # snare-wire rattle; only 2 dB because crashes often land on a kick
 ducks = [{ source = "kick", fmin_hz = 2000.0, fmax_hz = 8000.0, depth_db = 2.0, release_ms = 120.0, purpose = "cleanup" }]
-kit_gate = { enabled = true, depth_db = 10.0, hold_s = 3.0, own_onset_db = 10.0, own_hold_s = 3.0 }  # crashes ring long
+kit_gate = { enabled = true, depth_db = 15.0, hold_s = 2.0, own_onset_db = 10.0, own_hold_s = 3.0 }  # crashes ring long (own_hold_s); 10 dB / 3 s until November 2026
 # the separated hits are flat: a little attack above 2 kHz (the bell and wash below untouched); +0.3 keeps the SDR
 transient = { enabled = true, crossovers_hz = [2000.0], attack = [0.0, 0.3], sustain = [0.0, 0.0], max_db = 6.0 }
 # towards raw studio cymbal tracks: the separated ones lack the 1-2 kHz body (5-7 dB) that makes them metal, not wash
@@ -885,6 +885,11 @@ original_share = 0.25      # the original's share of the two parts' loudness (BS
                            # clean-up took out (room, bleed, buzz) at that level and keeps the stems honest; the
                            # group balance below aims at this blend. 0 = the stems alone (what the separation
                            # missed is lost); at most 0.5 (equal parts)
+# The original follows the kit gate of the hi-hat and cymbal stems in the snare buzz's band: while the drummer is
+# not playing, its 1.2-12 kHz goes down by the same amount (open as soon as either stem's gate is), so the buzz the
+# gate takes from the stems does not come back through the blend. The band holds the guitars' and voice's top too,
+# so in those passages the blend is a little less bright. [] = the original untouched
+kit_gate_band_hz = [1200.0, 12000.0]
 
 [balance]                  # keep the instruments at similar levels from song to song
 enabled = true             # (after each stem's chain, before the remix): each group is pulled towards its

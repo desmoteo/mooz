@@ -272,6 +272,7 @@ def _tracks(y: np.ndarray, fs: int, cfg: dict, stems: dict[str, Path] | None, st
         w_buzz = cleanup.buzz_fingerprint(library, zcfg)
         stats["buzz"] = {"learnt_from_songs": len(list(library.glob("*.npy"))), "fingerprint": w_buzz is not None}
     drum_names = set(cfg["drum_bus"]["stems"]) | {"drums"}
+    kit_gr = None  # the kit gate's gain reduction (dB per sample), open when any gated stem is open
     for name in sorted(stems, key=lambda n: n not in sources.values()):
         raw = read(stems[name])
         y -= raw
@@ -299,6 +300,9 @@ def _tracks(y: np.ndarray, fs: int, cfg: dict, stems: dict[str, Path] | None, st
         if prof:
             st["profile"] = profile.summary(prof)
         stem = effects.cleanup_track(stem, fs, tcfg, triggers, st, detail, prof)
+        g = st.pop("_kit_gate_gr", None)
+        if g is not None:
+            kit_gr = g if kit_gr is None else np.minimum(kit_gr, g)
         if name in drum_names and stage:
             stage.write(f"3_drum_cleanup/{name}", stem, fs)
             stage.write(f"3_drum_cleanup/{name}_removed", raw - stem, fs)
@@ -363,6 +367,16 @@ def _tracks(y: np.ndarray, fs: int, cfg: dict, stems: dict[str, Path] | None, st
                       "gain_db": None if g_orig == 0 else round(20 * np.log10(g_orig), 1),
                       "processed_lufs": round(unbalanced, 1),
                       "original_lufs": None if g_orig == 0 else round(orig_lufs + 20 * np.log10(g_orig), 1)}
+    band = cfg["mix"]["kit_gate_band_hz"]
+    if g_orig > 0 and band and kit_gr is not None and kit_gr.max() > 0:
+        # the original follows the kit gate in the snare buzz's band: while the drummer is not playing,
+        # the buzz the gate took from the hat and cymbal stems must not come back through the blend
+        gr = kit_gr.astype(np.float64)
+        original -= (1 - 10 ** (-gr / 20))[:, None] * effects._band(original, fs, band[0], band[1])
+        stats["blend"]["kit_gate"] = {"band_hz": list(band), "max_db": round(float(gr.max()), 1),
+                                      "closed_pct": round(100 * float(np.mean(gr > gr.max() / 2)), 1)}
+        del gr
+    del kit_gr
     bcfg = cfg["balance"]
     gains: dict[str, float | None] = {}
     if bcfg["enabled"]:

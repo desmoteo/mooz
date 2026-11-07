@@ -1,7 +1,7 @@
 # Plan: a simpler rehearsal-master
 
-Status, 7 November 2026: steps 1–3 are done (step 1 apart from deletions that wait for a
-yes); the trial of step 2 was judged better by ear, and its settings plus the blend of
+Status, 7 November 2026: steps 1–4 are done (the deletions of step 1 are left to the user
+to run; the command is in the session notes); the trial of step 2 was judged better by ear, and its settings plus the blend of
 step 3 are now the defaults. Decision of 7 November: the code is kept; nothing is pruned.
 The stages that are off by default stay available as settings. Nothing that changes the sound is implemented: the audio code and
 `rehearsal.toml` are as they were. It replaces no other document: [DESIGN.md](DESIGN.md)
@@ -406,6 +406,24 @@ band, which is code.
    (the band playing a passage with the snares disengaged, then engaged) would give a true
    buzz template to test any future method against; without it, listening is the only
    judge.
+
+**Done on 7 November 2026 (items 2 and 3):**
+- Kit gate 15 dB (was 10), hold 1.5 s on the hi-hat and 2 s on the cymbals (were 2 and 3):
+  defaults.
+- The original follows the kit gate in the buzz band (`[mix] kit_gate_band_hz = [1200, 12000]`):
+  while the drummer is not playing, that band of the original goes down by the gate's own
+  curve, open as soon as either the hi-hat's or the cymbals' gate is. This removes the
+  blend's cap in those passages. Cost: the band holds the guitars' and voice's top too, so
+  intros and breaks are a little less bright in the blend.
+- Measured on Stanza OK and Abitudine Strato (`processed/trial-gate/`, with A/B files),
+  against `trial-blend`: in the idle passages (9 % and 11 % of the songs) the master's
+  1.2–12 kHz against the loudness-matched recording went from +1.7 to −1.6 dB (Stanza) and
+  from +1.5 to +0.5 dB (Abitudine); the full band in those passages, and everything while
+  the kit plays, unchanged within 0.3 dB. The buzz itself sits 20–40 dB under the guitars
+  in that band, so these figures are mostly the cost (less top in the breaks); what they
+  bought in buzz is for the ear. Limiter and loudness range unchanged.
+- To listen: `processed/trial-gate/` against `processed/trial-blend/` on those two songs,
+  intros and breaks.
 
 ## Trying it today with settings only
 

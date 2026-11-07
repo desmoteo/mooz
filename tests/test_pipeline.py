@@ -151,6 +151,10 @@ def test_process_file_runs_end_to_end_and_meets_loudness_and_peak(song, preset, 
     assert blend["original_share"] == share and share > 0
     assert abs(blend["level_lu"] - 10 * np.log10(share / (1 - share))) < 0.01
     assert abs((blend["original_lufs"] - blend["processed_lufs"]) - blend["level_lu"]) < 0.1
+    if cfg["mix"]["kit_gate_band_hz"] and cfg["tracks"]["hihat"]["kit_gate"]["enabled"]:
+        # the lead-in before the first hit: the kit gate is closed there, and the original follows it
+        assert blend["kit_gate"]["max_db"] == cfg["tracks"]["hihat"]["kit_gate"]["depth_db"]
+        assert 0 < blend["kit_gate"]["closed_pct"] < 50
     for g, b in tracks["balance"].items():  # measured in the blend, before and after; the stems' gain bounded
         if "note" not in b:
             assert abs(b["stem_gain_db"]) <= pipeline.STEM_GAIN_MAX_DB and np.isfinite(b["after_lu"]), g

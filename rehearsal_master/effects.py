@@ -436,7 +436,8 @@ def kit_gate(x: np.ndarray, fs: float, cfg: dict, triggers: dict[str, np.ndarray
     gr = cfg["depth_db"] * (1 - open_)
     y = x * (10 ** (-gr / 20))[:, None]
     stats = {"closed_pct": round(100 * float(np.mean(gr > cfg["depth_db"] / 2)), 1),
-             "removed_db": round(float(10 * np.log10((np.mean(y * y) + EPS) / (np.mean(x * x) + EPS))), 2)}
+             "removed_db": round(float(10 * np.log10((np.mean(y * y) + EPS) / (np.mean(x * x) + EPS))), 2),
+             "_gr": gr.astype(np.float32)}  # the whole curve: the original recording follows it ([mix])
     return y, stats, dynamics.decimate(gr, fs)
 
 
@@ -535,6 +536,7 @@ def cleanup_track(x: np.ndarray, fs: float, cfg: dict, triggers: dict | None, st
     kg = cfg["kit_gate"]
     if kg["enabled"] and triggers:
         x, stats["kit_gate"], tr = kit_gate(x, fs, kg, triggers)
+        stats["_kit_gate_gr"] = stats["kit_gate"].pop("_gr")  # for the blend; not part of the report
         if detail is not None:
             t = detail["traces"]
             t["gate"] = tr if "gate" not in t else np.maximum(t["gate"], tr)
