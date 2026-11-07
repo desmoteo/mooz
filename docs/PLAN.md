@@ -1,7 +1,7 @@
 # Plan: a simpler rehearsal-master
 
-Status, 6 November 2026: step 1 (safety net) is done, apart from two deletions that wait
-for a yes. Nothing that changes the sound is implemented: the audio code and
+Status, 7 November 2026: step 1 (safety net) is done, apart from two deletions that wait
+for a yes; step 2 (the settings-only trial) has run and waits for the listening. Nothing that changes the sound is implemented: the audio code and
 `rehearsal.toml` are as they were. It replaces no other document: [DESIGN.md](DESIGN.md)
 still describes the pipeline as it runs today.
 
@@ -233,10 +233,28 @@ comments.
 
    *Done when:* plain `uv run pytest` passes (it does: 61 checks, about a minute), the
    first commit exists (it does) and the disk space is back (not yet).
-2. **Listen to the aims with settings only** (no code): the block under
-   [Trying it today](#trying-it-today-with-settings-only), all five songs, A/B against the
-   current masters.
-   *Done when:* the sample levels and the hat/cymbal trade are confirmed or adjusted by ear.
+2. **Listen to the aims with settings only** (no code). Run on 7 November 2026 with
+   [rehearsal-trial.toml](../rehearsal-trial.toml) (two passes, 45 minutes) into
+   `processed/trial/`; the current masters in `processed/` are untouched, both at −14 LUFS,
+   so the two can be compared directly. What the reports say, trial against current:
+   - Hi-hat and cymbals: the buzz stage takes nothing from them (before: 1.9–4.5 dB); the
+     snare's 0.2–0.6 dB is unchanged. Samples add half as much to kick and snare
+     (0.4–1.6 dB, before 0.8–3.2); none on hats and cymbals (Vita's +11 dB is gone).
+   - The master's top is lower: 6–16 kHz down 0.6–2.1 dB, most on Riempio i vuoti and Vita.
+     Two causes: no studio hats and cymbal samples, and the kit balance now pulls the
+     cymbals 2–4 dB further down, because the buzz left in that stem counts as cymbal
+     level. If the hats and cymbals sound too far back, the first thing to try is
+     `[drum_bus.balance] offsets = { cymbals = 4.0 }` (now 1.5), or the kit balance should
+     measure the cymbals in a band the buzz does not share.
+   - Without the song styles, the two "wall" songs (Riempio i vuoti, Vita) get 1.2 dB of
+     glue instead of 1.8 and no parallel drum compression, so the limiter works harder on
+     them (4.3 % and 7.4 % of the time, before 0.2 % and 0.7 %); their loudness range is
+     up by 0.4 LU. Everything else (loudness, true peak, group balance, 60–120 Hz) is
+     within 0.5 dB of before.
+
+   *Done when:* the sample levels and the hat/cymbal trade are confirmed or adjusted by ear
+   (waiting for the listening). Listen above all to Vita and Abitudine Strato (the largest
+   hat and cymbal changes) and to the kick and snare punch on Riempio i vuoti.
 3. **Original blend and correctness.**
    - Add the blend (decision 3) and remove the residual add-back; the balance aims at the
      blended mix.

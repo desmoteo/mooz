@@ -1,0 +1,42 @@
+# Trial of the plan's aims with settings only (docs/PLAN.md, step 2): the folder's settings
+# plus the changes below, written to processed/trial/ so the current masters stay for A/B.
+#   uv run rehearsal-master -c rehearsal-trial.toml        (twice: the tone library of a new
+#   output folder fills up during the first pass)
+# Not in this trial: the original recording blended in (needs code, step 3).
+
+[loudness]
+target_lufs = -14.0
+
+[stems]
+residual_gain_db = -3.0
+
+[tracks.guitar]
+width = 0.8
+balance = 0.6
+
+[output]
+dir = "processed/trial"
+mp3 = true
+
+# --- the trial ---------------------------------------------------------------------------
+
+[buzz]
+stems = ["snare", "toms"]        # nothing taken from the hi-hat and cymbals (decision 1)
+
+[character]
+adapt = false                    # one chain for every song (decision 4)
+
+[tracks.kick]                    # samples halved (decision 2): own 0.3 -> 0.15, studio 0.4 -> 0.2
+augment = { mix = 0.15, library = { mix = 0.2 } }
+
+[tracks.snare]
+augment = { mix = 0.15, library = { mix = 0.2 } }
+
+[tracks.toms]
+augment = { mix = 0.15, library = { mix = 0.2 } }
+
+[tracks.hihat]
+augment = { enabled = false }    # no studio hats
+
+[tracks.cymbals]
+cymbal_augment = { enabled = false }   # no studio crashes / rides
