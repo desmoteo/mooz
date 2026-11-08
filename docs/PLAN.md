@@ -495,6 +495,20 @@ taken from the original too, as with the kit gate. The original is at a tenth of
 including the part the drum split drops into no stem, comes through it, and at a quarter it was
 of the same order as the hat stem's own.
 
+**Result on the 8 takes (9 November 2026, both versions, two passes; every master −14.0 LUFS,
+−1.0 dBTP).** Taken between the hat's hits in 2–8 kHz, with the hits within 0.3 dB everywhere:
+
+| take | between hits | hat / bed contrast | note |
+|---|---|---|---|
+| Miramare | −5.2 dB | 7.5 dB | its bed is half bright: a hat-like sound fills the gaps too |
+| Vita (both) | −9.5, −10.6 dB | 17, 19 dB | |
+| Stanza (both) | −12.8, −11.9 dB | 19, 18 dB | |
+| Riempio i vuoti | nothing taken | 2.0 dB | what fills the gaps is as bright as the hat (an open hat or the tamburello): the step rightly stays out |
+| Biancaneve (both) | −11.3, −11.0 dB | 15 dB | |
+
+The tone correction between songs moves no band by more than 0.9 dB. The pre-master stems in
+`5_premix/` add up to the mix before the bus chain as before.
+
 **Not done.** The cymbals stem holds a bed 8 dB lower (its ride wash would be at risk; `[bed]
 stems` can include it). Giving the hi-hat to the 5-stem model alone would gain 3 dB before any
 clean-up, at the cost of the average's smoothing. The real fix is at the source: dampen the snare
