@@ -105,8 +105,11 @@ In `processed/full/` and `processed/simple_bass/` (or the preset's folder), for 
    with the same instrument's median over all songs.
 4. **Clean the drums** (stage 3): the snare buzz that bass, guitars and voice set off is learnt
    and removed from the snare and tom stems (the hi-hat and cymbals share its band and are left
-   alone: taking it from them was audible); bleed keyed to kick and snare hits is ducked; gates
-   between hits and while the drummer is not playing.
+   alone: taking it from them was audible). The bed under the hi-hat, the snare's wires rattling
+   along with the PA, which the drum split files under the hat in every gap between its hits, is
+   taken out by its shape: each moment is read as bright hat + dark bed + the snare's burst, and
+   the stem keeps the hat's share, its hits untouched. Bleed keyed to kick and snare hits is
+   ducked; gates between hits and while the drummer is not playing.
 5. **Studio stems** (stage 2): kick, snare and toms are reinforced with samples made from the
    drummer's own cleanest hits, the bass's fundamental is pitch-tracked and raised, the voice
    gets its chest resonance back when it goes thin. Each stem is matched to its instrument's
@@ -115,8 +118,9 @@ In `processed/full/` and `processed/simple_bass/` (or the preset's folder), for 
    *EQ references*). The expanders clean down to each stem's measured noise floor.
 6. **Drum bus** (stage 4): kit pieces balanced against each other, glue and parallel compression.
 7. **Mix and master** (stage 5): the original recording under the processed stems at a quarter
-   of the loudness (`[mix] original_share`: what the separation and the clean-up took out is still
-   there, at a known level), instruments placed and balanced in that blend (consistent from song to song,
+   of the loudness by default, a tenth in `rehearsal.toml` (`[mix] original_share`: what the
+   separation took out is still there, at a known level; what the hi-hat's bed clean-up and the
+   kit gate took is taken from it too), instruments placed and balanced in that blend (consistent from song to song,
    blended with how mix engineers balance a band: voice up, drums down a little), guitars
    making room for the voice's words, the low end widening gradually, the same overall tone
    in every song,
@@ -170,7 +174,7 @@ Put changes in `rehearsal.toml` (only the keys you change; every option is expla
 |---|---|
 | voice / bass too dry and upfront, or too roomy | `[multitrack] close_share = { vocals = 0.6, bass = 0.5, guitar = 0.7, other = 0.6 }` (less of the close track; more: 0.9) |
 | an instrument on the close track left out, or bleed let in | see `[multitrack]`: `min_level_lu` (default −15), `stems` (add `"other"`) |
-| too much of the room recording / too processed | `[mix] original_share = 0.15` (drier, the stems in front) .. `0.35` (closer to the recording; 0 = stems only) |
+| too much of the room recording / too processed | `[mix] original_share = 0.05` (drier, the stems in front) .. `0.35` (closer to the recording; 0 = stems only; the band's `rehearsal.toml` has 0.10, the default 0.25) |
 | muddy / boxy | `eq.strength = 0.9` |
 | too bright / not warm enough | `eq.tilt_db_per_oct = -2.3`; more guitar saturation `[tracks.guitar] saturator = { mix = 0.5 }` |
 | vocals too roomy / too dry | `[stems.vocal_room] max_reduction_db = 9.0` (0 = as recorded; default 6) |
@@ -195,6 +199,7 @@ Put changes in `rehearsal.toml` (only the keys you change; every option is expla
 | cymbals harsh / dull / thin | `[tracks.cymbals]` EQ: the 3.5 kHz cut, the 7 kHz shelf, the 1.6 kHz body (+2.5 dB); `tone_match = { reference = 0.5 }` for less of the studio tone (hi-hat too) |
 | hi-hat choked on kicks | `[tracks.hihat]` duck `depth_db` (default 5) |
 | snare buzz in intros and breaks | `[tracks.hihat] kit_gate = { depth_db = 20.0 }` (same for cymbals; default 15); the original recording follows that gate in 1.2–12 kHz (`[mix] kit_gate_band_hz`; `[]` leaves the original untouched) |
+| rattle under the hi-hat between its hits (the snare wires with the PA) | `[bed] floor_db = -24.0` (deeper; default −15), `bias_db = 3.0` (less kept as hat; default 6); the hat's attacks thin: `protect_ms = 40.0`; `stems = ["hihat", "cymbals"]` to clean the cymbals too; `enabled = false` for none |
 | snare buzz audible in the hats / cymbals | `[buzz] stems = ["snare", "toms", "hihat", "cymbals"]` (take it from them too; it was heard as artifacts, so by default only snare and toms); thinner after it: `stem_floor_db = { hihat = -6.0, cymbals = -6.0 }`; cymbals too far back: `[drum_bus.balance] offsets = { cymbals = 4.0 }` (default 1.5) |
 | bass boomy / thin | `[tracks.bass]` the 100 Hz low shelf (default +2.5 dB) |
 | a stem sounds different from song to song | its `tone_match = { strength = 0.9 }` (0 = off); `transient = { adapt = true }` for the attack |

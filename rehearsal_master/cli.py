@@ -127,6 +127,10 @@ def _print(rep: dict) -> None:
             parts.append(f"gate avg -{st['gate']['avg_db']:.1f}")
         if "buzz" in st:
             parts.append(f"buzz removed {st['buzz']['removed_db']:+.1f} dB of its 1.2-12 kHz")
+        if "bed" in st:
+            b = st["bed"]
+            parts.append(f"bed: {b['note']}" if "note" in b else
+                         f"bed between hits {b['between_hits_db']:+.1f} dB, at the hits {b['hat_hits_db']:+.1f} (2-8 kHz)")
         if "kit_gate" in st:
             parts.append(f"kit gate closed {st['kit_gate']['closed_pct']:.0f}% of the song")
         if "saturator" in st and st["saturator"]["harmonics_db"] is not None:

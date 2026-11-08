@@ -224,7 +224,7 @@ outputs = { left = "guitar_left", right = "guitar_right", both = "guitar" }
 
 # Every track chain starts from these neutral settings; [tracks.<name>] below only
 # lists what differs. Chain order:
-#   clean-up (stage 3): [snare buzz] -> expander -> clean-up ducks -> gate -> kit_gate
+#   clean-up (stage 3): [snare buzz] -> [bed, hi-hat] -> expander -> clean-up ducks -> gate -> kit_gate
 #   studio (stage 2):   tone_match + eq (+ kick_eq) -> dynamic_eq -> resonance -> compressor -> kick_shaper
 #                       -> transient -> saturator -> exciter -> bass_enhancer
 #   mix:                mix ducks -> balance/width/pan -> gain
@@ -864,6 +864,22 @@ own_hit_ms = { snare = 300.0, hihat = 500.0, cymbals = 1500.0, toms = 400.0 }  #
                            # hit (body peaks of snare/toms, attacks of hats/cymbals; crashes ring long)
 min_learn_s = 20.0         # seconds of buzz-only frames needed (over all songs) before removing anything
 protect_ms = 150.0         # snare/toms: nothing removed for this long after each of their own hits
+
+[bed]                      # stage 3, the hi-hat (bed.py): the bed between its hits, the snare's wires rattling along with
+enabled = true             # the PA and the amps, which the drum split files under the hi-hat (15 dB under its hits, in
+stems = ["hihat"]          # every gap: no gate reaches it, and the hats never stop long enough for the kit gate). Each
+band_hz = [1200.0, 8000.0] # moment is read as hat + bed + the snare's burst, with shapes learnt from this song: the hat's
+floor_db = -15.0           # from the first 10 ms of its hits, the bed's from the frames with no hit near, the burst's
+bias_db = 6.0              # at snare hits with no hat near. Per bin in band_hz the stem keeps hat / (hat + bed +
+protect_ms = 25.0          # burst), at most floor_db down; bias_db leans the fit toward the hat. Nothing is taken in
+release_ms = 40.0          # the first protect_ms of each hat hit (the hat masks the bed there); the gain falls back at
+key = "snare"              # release_ms. key: the stem whose raw envelope keys the burst. Above band_hz nothing changes.
+after_hit_ms = 150.0       # "no hit near" = none within 50 ms before and this long after (a closed hat has died by then)
+min_hits = 20              # Nothing is taken with fewer hat hits than this, less time between hits than
+min_between_s = 10.0       # min_between_s, or a bed within min_contrast_db of the hat's brightness (8-16 kHz
+min_contrast_db = 6.0      # against 2-5 kHz: an open hat's own decay). On Biancaneve (November 2026): -12 dB between
+original_follows = true    # hits, the hits within 0.5 dB. original_follows: what is taken from the stem is taken from
+                           # the original recording too ([mix] original_share), as with the kit gate
 
 [character]                # stage 0: what kind of song it is (wall, ballad, build, dynamic, steady)
 enabled = true

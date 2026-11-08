@@ -441,6 +441,8 @@ def plot_tracks(png: Path, rep: dict, details: dict[str, dict], cfg: dict) -> No
             bits.append(f"ducking on {d['source']} max {d['max_db']:.1f} dB")
         if "gate" in st:
             bits.append(f"gate avg {st['gate']['avg_db']:.1f} dB")
+        if "bed" in st and "between_hits_db" in st["bed"]:
+            bits.append(f"bed {st['bed']['between_hits_db']:+.1f} dB between hits")
         if "kit_gate" in st:
             bits.append(f"kit gate closed {st['kit_gate']['closed_pct']:.0f}%")
         if st.get("saturator", {}).get("harmonics_db") is not None:

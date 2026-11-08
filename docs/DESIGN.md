@@ -14,7 +14,8 @@ original recording blended in, quieter samples) is in [PLAN.md](PLAN.md).
   (loudness, spectrum, hits, hum, stereo positions, buzz, each stem's profile), not by fixed
   assumptions.
 - **Nothing is lost.** Stems sum back to the recording, and the recording itself is blended
-  under the processed stems (a quarter of the loudness, `[mix] original_share`): what the
+  under the processed stems (a quarter of the loudness by default, a tenth in the band's
+  `rehearsal.toml`, `[mix] original_share`): what the
   separation and the clean-up take out is still there, at a known level. Masks and band splits
   are built to reconstruct exactly.
 - **Each stage is audible.** Stages 0–5 are written to disk, so every decision can be heard
@@ -296,6 +297,25 @@ no new separation; both halves share the guitar's profile and tone match.
   Measured on Stanza's first 70 s (singer and drums), the hi-hat between its hits is 4 dB
   lower than with one floor (−73 against −69 dB in the buzz band; raw −61), with its hits
   unchanged.
+- **The bed under the hi-hat** ([bed.py](../rehearsal_master/bed.py), `[bed]`, since 9 November
+  2026). While the band plays, the snare's wires rattle along with the PA and the amps, and the
+  drum split files most of that under the hi-hat: on Biancaneve a dark noise (peaking near 3 kHz,
+  15 dB down by 12 kHz) 15 dB under the hat's hits, in every gap between them, 8.6 dB louder while
+  the singer sings, with zero coherence to the voice itself (a rattle, not a leak). No gate reaches
+  it: it is tied to no hit, and the hats never stop long enough for the kit gate. The hat is
+  bright and the bed is dark, so each moment of the stem is read as hat + bed + the snare's
+  burst, with shapes in third-octave bands from 1.2 to 16 kHz learnt from the song: the hat's
+  from the first 10 ms of its hits, the bed's from the frames with no hit within 50 ms before or
+  150 ms after, the burst's at snare hits with no hat near, where its level against the raw snare
+  stem is measured too. Per frame the hat and the bed are fitted (non-negative least squares in
+  amplitude), the burst is keyed on the snare stem's own envelope, and per bin in 1.2–8 kHz the
+  stem keeps hat / (hat + bed + burst), at most 15 dB down, leaning 6 dB toward the hat. The first
+  25 ms of each hat hit are left alone, the gain falls back in 40 ms, and above 8 kHz nothing
+  changes. Nothing is taken when there are fewer than 20 hat hits, less than 10 s between hits, or
+  a "bed" within 6 dB of the hat's brightness (an open hat's own decay). On Biancaneve after 54 s,
+  in 2–4 kHz: −12.7 dB between hits, −0.3 at the hat's hits, −5.6 in their tails, −9.2 at snare
+  hits with no hat, −0.1 then −2.9 at snare hits with a hat; 8–16 kHz unchanged everywhere.
+  What is taken is taken from the original recording too (stage 5).
 
   *Tried and dropped:* predicting the buzz from its exciters (fitting how its level follows
   the bass, voice and guitars while the kit is idle). The idle stretches don't contain the
@@ -520,7 +540,11 @@ pattern method as the mix balance, below), summed, and given the bus chain:
   original goes down by the gate's own curve (open as soon as either stem's gate is), so
   the buzz the gate takes from the stems does not come back through the blend. The band
   holds the guitars' and voice's top too, so those passages of the blend are a little
-  less bright.
+  less bright. The same for the bed under the hi-hat (stage 3, `[bed] original_follows`):
+  what that step takes from the hat stem, sample for sample, is taken from the original
+  too, so the original carries the hat the step kept and none of what it removed. Since
+  9 November 2026 the band's settings put the original at a tenth (`rehearsal.toml`; the
+  default stays a quarter): 9.5 LU under the stems.
 - **Group balance**: each group's loudness (vocals, guitars, bass, drums) is measured as it
   will be heard, in the blend (its processed part plus its raw stems at the blend's gain),
   relative to the whole, and compared with its target. The gain is how far it misses, minus the median miss of
@@ -712,6 +736,7 @@ processed/stems_ensemble_merged/<settings>/<take>/  the stems with the close tra
 | `multitrack.py` | close stems: which count, delay and polarity to the room, merged stems |
 | `separate.py` | separation backends, chained steps, cache, pan split |
 | `cleanup.py` | hum, bleed reduction (optional), buzz learning/removal, group balance |
+| `bed.py` | the bed under the hi-hat: hat + bed + snare burst fitted per frame, the stem keeps the hat's share |
 | `effects.py` | per-track effects; clean-up / studio / mix chain parts |
 | `dynamics.py` | compressor, multiband, clipper, limiter, envelopes |
 | `eq.py` | spectra, target curve, biquads, linear-phase FIR |
@@ -753,6 +778,8 @@ stage files, and the null test: every processor off, the master is the recording
 with a close track, and that the `5_premix` parts add up to the mix;
 `test_separation_glue.py` the audio-separator internals that `separate.py` patches, which is
 why that library is pinned.
+`test_bed.py` the bed goes and the hat's hits stay, an open hat's own decay is not a bed, the snare's
+burst is keyed on the snare stem.
 
 ## 10. Other tools considered
 

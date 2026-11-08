@@ -17,7 +17,7 @@ import numpy as np
 import soundfile as sf
 from scipy import signal
 
-from . import character, cleanup, config, dynamics, effects, eq, export, loudness, multitrack, profile, separate, space, stages, stereo, takes, trim
+from . import bed, character, cleanup, config, dynamics, effects, eq, export, loudness, multitrack, profile, separate, space, stages, stereo, takes, trim
 
 
 def _finalize(x: np.ndarray, fs: int, cfg: dict) -> tuple[np.ndarray, np.ndarray, dict]:
@@ -277,6 +277,8 @@ def _tracks(y: np.ndarray, fs: int, cfg: dict, stems: dict[str, Path] | None, st
         stats["buzz"] = {"learnt_from_songs": len(list(library.glob("*.npy"))), "fingerprint": w_buzz is not None}
     drum_names = set(cfg["drum_bus"]["stems"]) | {"drums"}
     kit_gr = None  # the kit gate's gain reduction (dB per sample), open when any gated stem is open
+    bcfg = cfg["bed"]
+    bed_taken = None  # what the bed clean-up took from the stems: taken from the original too (stage 5)
     for name in sorted(stems, key=lambda n: n not in sources.values()):
         raw = read(stems[name])
         y -= read(room_of(name))
@@ -297,6 +299,16 @@ def _tracks(y: np.ndarray, fs: int, cfg: dict, stems: dict[str, Path] | None, st
             near = cleanup.own_hits(stem, fs, name, zcfg["own_hit_ms"][name])
             zc = zcfg | {"floor_db": zcfg["stem_floor_db"][name], "between_floor_db": zcfg["stem_between_floor_db"][name]}
             stem, st["buzz"] = cleanup.remove_buzz(stem, fs, w_buzz, zc, protect, near)
+        if bcfg["enabled"] and name in bcfg["stems"]:  # stage 3: the bed between the hat's hits (bed.py)
+            key = read(stems[bcfg["key"]]) if bcfg["key"] in stems else None
+            before = stem
+            stem, st["bed"] = bed.remove_bed(stem, fs, bcfg, key, name)
+            del key
+            if bcfg["original_follows"] and "removed_db" in st["bed"]:
+                taken = (before - stem).astype(np.float32)
+                bed_taken = taken if bed_taken is None else bed_taken + taken
+                del taken
+            del before
         prof, target = profiles.get(name), targets.get(name)
         ref = profile.reference_tone(name, eq.log_grid(fs))
         if ref is not None:
@@ -381,6 +393,13 @@ def _tracks(y: np.ndarray, fs: int, cfg: dict, stems: dict[str, Path] | None, st
                                       "closed_pct": round(100 * float(np.mean(gr > gr.max() / 2)), 1)}
         del gr
     del kit_gr
+    if g_orig > 0 and bed_taken is not None:
+        # the original follows the bed clean-up too: what was taken from the hat stem is taken from it
+        before_db = 10 * np.log10(np.mean(effects._band(original, fs, bcfg["band_hz"][0], bcfg["band_hz"][1]) ** 2) + 1e-20)
+        original -= g_orig * bed_taken
+        after_db = 10 * np.log10(np.mean(effects._band(original, fs, bcfg["band_hz"][0], bcfg["band_hz"][1]) ** 2) + 1e-20)
+        stats["blend"]["bed"] = {"band_hz": list(bcfg["band_hz"]), "band_change_db": round(float(after_db - before_db), 1)}
+    del bed_taken
     bcfg = cfg["balance"]
     gains: dict[str, float | None] = {}
     if bcfg["enabled"]:

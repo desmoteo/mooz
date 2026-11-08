@@ -10,7 +10,8 @@ presets = ["", "simple_bass"]  # every take twice: the full bass chain, and the 
 target_lufs = -14.0          # where streaming and phones play (-16 kept more punch, -12 is "radio loud")
 
 [mix]
-original_share = 0.25        # the original recording under the processed stems: a quarter of the loudness
+original_share = 0.10        # the original recording under the processed stems: a tenth of the loudness (a quarter until
+                             # 9 November 2026; the bed clean-up of the hi-hat is followed by the original, see [bed])
 
 [tracks.guitar]
 width = 0.8                  # wider guitars (default 0.6: the masters were nearly mono, L/R correlation 0.94)

@@ -4,8 +4,9 @@ Status, 7 November 2026: steps 1–4 are done (the deletions of step 1 are left 
 to run; the command is in the session notes); the trial of step 2 was judged better by ear, and its
 settings plus the blend of step 3 are now the defaults. Decision of 7 November: the code is kept;
 nothing is pruned, and the stages that are off by default stay available as settings. Takes of
-several files (a Zoom's room and inputs) are supported since then: see "Close tracks" below. Steps
-5–9 are not started. [DESIGN.md](DESIGN.md) describes the pipeline as it runs today.
+several files (a Zoom's room and inputs) are supported since then: see "Close tracks" below. The
+bed under the hi-hat has its own clean-up since 9 November, and the original is at a tenth: see
+"The bed under the hi-hat" below. Steps 5–9 are not started. [DESIGN.md](DESIGN.md) describes the pipeline as it runs today.
 
 ## Aims
 
@@ -467,6 +468,37 @@ What the 8 takes hold, on the only input in use (`Tr2`, a mono mixer feed):
   500 Hz, where its harmonic stages were.
 - **A defect found on the way:** a drum sample that starts abruptly stopped the song (a negative
   start cut an empty reference). Fixed with a test.
+
+## The bed under the hi-hat (9 November 2026)
+
+Heard on Biancaneve (`261105_235855`) from 54 s: snare-wire rattle all through the hi-hat stem,
+and in the snare stem, whose hit gate already takes care of it (−18 dB between hits).
+
+**What it is, measured.** A dark noise (peak near 3 kHz, −15 dB by 12 kHz) 15 dB under the hat's
+hits, in every gap between them. It appears when the full band comes in, is 8.6 dB louder while the
+singer sings, and has zero coherence with the close voice (the room vocal stem has 0.5–0.6): a
+rattle the PA sets off, not a leak. It keeps its shape with the voice on or off, does not follow
+the voice's level within a phrase, is not tied to kick hits and does not decay after cymbal hits.
+Before the drum split it is 7 dB under the hat's hits; the 5-stem DrumSep puts it 18 dB under, the
+6-stem one 10 dB, the 0.75/0.25 average 15 dB. The hat and the bed differ by 1.6 dB left to right:
+no spatial cue. No gate reaches it: the kit gate never closes (the hats never stop) and the ducks
+are keyed on hits it does not follow. The buzz fingerprint removal (`[buzz]`) on the hi-hat was
+heard as artifacts earlier.
+
+**What was done.** A stage 3 step for the hi-hat ([bed.py](../rehearsal_master/bed.py), `[bed]`,
+details in [DESIGN.md](DESIGN.md)): hat, bed and the snare's burst as three shapes learnt from the
+song, the stem keeping the hat's share per bin in 1.2–8 kHz, the first 25 ms of each hat hit and
+everything above 8 kHz untouched, the burst keyed on the raw snare stem. On Biancaneve after 54 s
+it takes 12.7 dB between hits and 0.3 dB at the hits (2–4 kHz). What it takes from the stem is
+taken from the original too, as with the kit gate. The original is at a tenth of the loudness in
+`rehearsal.toml` (9.5 LU under the stems; the default stays a quarter): the recording's full bed,
+including the part the drum split drops into no stem, comes through it, and at a quarter it was
+of the same order as the hat stem's own.
+
+**Not done.** The cymbals stem holds a bed 8 dB lower (its ride wash would be at risk; `[bed]
+stems` can include it). Giving the hi-hat to the 5-stem model alone would gain 3 dB before any
+clean-up, at the cost of the average's smoothing. The real fix is at the source: dampen the snare
+or move the vocal monitor away from it at the next rehearsal.
 
 ## Trying it today with settings only
 
