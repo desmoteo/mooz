@@ -1,4 +1,4 @@
-# Mooz
+<p align="center"><img src="docs/mooz-social.png" alt="Mooz: Master Out Of Zoom" width="640"></p>
 
 Mooz (Master Out Of Zoom) turns stereo rehearsal recordings (one recorder in the room, e.g. a
 Zoom) into balanced, mastered tracks: stems separated on the GPU, cleaned and processed one by
