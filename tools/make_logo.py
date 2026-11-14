@@ -12,6 +12,7 @@ and cannot load fonts.
   mooz-banner.svg       README header, transparent, follows the viewer's light/dark scheme
   mooz-banner-light.svg / mooz-banner-dark.svg   the same, fixed, for GitHub's <picture>
   mooz-avatar.png       full-bleed 512 px square for avatar uploads (GitHub rounds it itself)
+  mooz-social.png       1280 x 640 social preview (GitHub: Settings > General > Social preview)
 
   uv run --with fonttools --with cairosvg python tools/make_logo.py
 """
@@ -277,6 +278,47 @@ def banner(theme: str | None) -> str:
     return doc(w, h, "Mooz: Master Out Of Zoom", css(theme), ACCENT + defs, out)
 
 
+SOCIAL_LINE = "Rehearsal recordings in, mixed and mastered tracks out"
+
+
+def social(w: int = 1280, h: int = 640) -> str:
+    """The dark banner on the tile's background at link-preview size, with one line under it.
+    Sites crop the edges of these images, so everything sits well inside the frame."""
+    defs, body = mark("m")
+    s = 1.45
+    word_size = 176
+    word_w = advance(DEMI, "Mooz", word_size, 0)
+    cap = cap_height(DEMI, word_size)
+    _, _, tag_size = tagline(0, 0, word_w)
+    tag_cap = cap_height(BOOK, tag_size)
+    gap_text = 0.3 * cap
+    text_h = cap + gap_text + tag_cap
+    mark_w = (MARK_RIGHT - MARK_LEFT) * s
+    mark_h = (MARK_BOTTOM - MARK_TOP) * s
+    gap = 52
+    lock_w = mark_w + gap + word_w
+    lock_h = max(mark_h, text_h)
+    line_size, line_gap = 34, 64
+    line_cap = cap_height(BOOK, line_size)
+    line_w = advance(BOOK, SOCIAL_LINE, line_size, 0.02)
+    top = (h - (lock_h + line_gap + line_cap)) / 2
+    cy = top + lock_h / 2
+    x0 = (w - lock_w) / 2
+    mark_x = x0 + (128 - MARK_LEFT) * s
+    tx = x0 + mark_w + gap
+    base = cy - text_h / 2 + cap
+    word, _ = wordmark(tx, base, word_size)
+    lead, rest, _ = tagline(tx, base + gap_text + tag_cap, word_w)
+    line = text_path(BOOK, SOCIAL_LINE, (w - line_w) / 2, top + lock_h + line_gap + line_cap,
+                     line_size, 0.02)
+    out = (f'<rect width="{w}" height="{h}" fill="url(#bg)"/>'
+           f'\n<g transform="translate({num(mark_x)} {num(cy)}) scale({s}) translate(-128 -128)">{body}</g>'
+           f'\n<path class="word" d="{word}"/>'
+           f'\n<path class="init" d="{lead}"/><path class="tag" d="{rest}"/>'
+           f'\n<path class="tag" d="{line}"/>')
+    return doc(w, h, "Mooz: Master Out Of Zoom", css("dark"), TILE + ACCENT + defs, out)
+
+
 def main() -> None:
     files = {
         "mooz-mark.svg": icon(small=False),
@@ -293,6 +335,9 @@ def main() -> None:
     cairosvg.svg2png(bytestring=icon(small=False, rounded=False).encode(),
                      write_to=str(DOCS / "mooz-avatar.png"), output_width=512, output_height=512)
     print("mooz-avatar.png")
+    cairosvg.svg2png(bytestring=social().encode(), write_to=str(DOCS / "mooz-social.png"),
+                     output_width=1280, output_height=640)
+    print("mooz-social.png")
 
 
 if __name__ == "__main__":
