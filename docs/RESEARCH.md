@@ -1,7 +1,7 @@
 # Research notes: improving stems and remixing them
 
 What published work says about turning separated stems of a room recording into studio-like
-tracks and remixing them, compared with what rehearsal-master does ([DESIGN.md](DESIGN.md)).
+tracks and remixing them, compared with what Mooz does ([DESIGN.md](DESIGN.md)).
 Compiled October 2026. A few claims rest on abstracts only, where the full text could not be
 opened (marked *abstract*).
 

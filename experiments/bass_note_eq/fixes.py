@@ -36,7 +36,7 @@ from scipy import signal
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
-from rehearsal_master import config, effects, eq, profile, stages  # noqa: E402
+from mooz import config, effects, eq, profile, stages  # noqa: E402
 
 song = sys.argv[1] if len(sys.argv) > 1 else "260924_230957_TrLR Stanza OK"
 st_dir = ROOT / "processed/stages" / song
@@ -104,7 +104,7 @@ raw = sf.read(st_dir / "1_raw" / "bass.wav", dtype="float64", always_2d=True, st
 # measurements, on the loud part
 A, B = 30.0, 250.0
 cents = [40, 50, 63, 80, 100, 125, 160, 200, 250, 315, 400, 630, 1000, 1600, 2500, 4000]
-studio = json.loads((ROOT / "rehearsal_master/references/raw_multitracks.json").read_text())
+studio = json.loads((ROOT / "mooz/references/raw_multitracks.json").read_text())
 rt = np.interp(np.log(cents), np.log(studio["grid_hz"]), np.array(studio["instruments"]["bass"]["tone"]))
 rt = rt - rt[cents.index(100)]
 onsets = np.load(out / "raw" / "analysis.npz")["onsets"]

@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mooz</title>
+<link rel="icon" href="/static/mark.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<!-- the logo's ring gradient, shared by every progress wave on the page -->
+<svg width="0" height="0" aria-hidden="true" focusable="false" style="position:absolute">
+  <defs>
+    <linearGradient id="ring" x1="0" x2="1" y1="0" y2="0">
+      <stop offset="0" class="ring0"/><stop offset="1" class="ring1"/>
+    </linearGradient>
+  </defs>
+</svg>
+
+<div class="shell">
+  <nav class="rail" aria-label="Projects">
+    <a class="brand" href="#/"><img src="/static/mark.svg" alt="" width="40" height="40"><span>Mooz</span></a>
+    <div id="projects"></div>
+    <a class="guide" href="#/help">How it works</a>
+    <a class="button quiet" href="#/new">New project</a>
+  </nav>
+  <main>
+    <section id="job" aria-live="polite"></section>
+    <div id="view"></div>
+  </main>
+</div>
+
+<div id="player" hidden>
+  <span id="playing"></span>
+  <audio id="audio" controls preload="none"></audio>
+  <button class="quiet small" id="player-close" type="button">Close</button>
+</div>
+<div id="toast" role="status" aria-live="polite"></div>
+<script src="/static/app.js"></script>
+</body>
+</html>

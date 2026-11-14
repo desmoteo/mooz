@@ -33,6 +33,7 @@ class StageWriter:
         self.root = root if fmt != "off" else None
         self.fmt = fmt
         self.written: list[str] = []
+        self.files: dict[str, Path] = {}  # stage name -> the file it is in
         if self.root:
             self.root.mkdir(parents=True, exist_ok=True)
 
@@ -51,12 +52,32 @@ class StageWriter:
         if self.fmt == "mp3" and shutil.which("ffmpeg"):
             tmp = path.with_suffix(".tmp.wav")
             sf.write(tmp, y.astype(np.float32), fs, subtype="FLOAT")
+            path = path.with_suffix(".mp3")
+            path.unlink(missing_ok=True)
             subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", str(tmp), "-codec:a", "libmp3lame", "-b:a", "256k",
-                            str(path.with_suffix(".mp3"))], check=True)
+                            str(path)], check=True)
             tmp.unlink()
         else:
+            # never written through: the file there may be a kept chain's, under a second name (adopt)
+            path.unlink(missing_ok=True)
             sf.write(path, y, fs, subtype="PCM_24", format="FLAC" if self.fmt == "flac" else "WAV")
         self.written.append(rel)
+        self.files[rel] = path
+
+    def adopt(self, rel: str, src: Path) -> None:
+        """A stage file an earlier run wrote (chaincache.py), put in its place: a second name for
+        the same file where the disk allows it, else a copy."""
+        if not self.root:
+            return
+        path = self.root / f"{rel}{src.suffix}"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.unlink(missing_ok=True)
+        try:
+            os.link(src, path)
+        except OSError:
+            shutil.copy2(src, path)
+        self.written.append(rel)
+        self.files[rel] = path
 
     def json(self, rel: str, data: dict) -> None:
         if self.root:

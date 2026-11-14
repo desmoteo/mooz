@@ -32,7 +32,7 @@ import bass_level  # noqa: E402
 import bank  # noqa: E402
 from studio_profile import REGISTERS, by_register, harmonic_db  # noqa: E402
 
-from rehearsal_master import config, note_eq, stages  # noqa: E402
+from mooz import config, note_eq, stages  # noqa: E402
 
 song = sys.argv[1] if len(sys.argv) > 1 else "260924_230957_TrLR Stanza OK"
 VARIANTS = {"medium": {}, "tight": {"width_cents": 20.0, "min_hz": 1.5}}
@@ -48,7 +48,7 @@ _, st, (f0, t_f, onsets) = note_eq.note_eq(x, fs, cfg["note_eq"] | {"enabled": T
                                            cfg["bass_fundamental"])
 print(f"[{time.time() - t0:4.0f}s] pitch: {st['pitched_pct']}% of the song, {len(onsets)} notes", flush=True)
 
-studio = json.loads((ROOT / "rehearsal_master/references/raw_multitracks.json").read_text())
+studio = json.loads((ROOT / "mooz/references/raw_multitracks.json").read_text())
 cents = [40, 50, 63, 80, 100, 125, 160, 200, 250, 315, 400, 630, 1000, 1600, 2500, 4000]
 rt = np.interp(np.log(cents), np.log(studio["grid_hz"]), np.array(studio["instruments"]["bass"]["tone"]))
 rt -= rt[cents.index(100)]

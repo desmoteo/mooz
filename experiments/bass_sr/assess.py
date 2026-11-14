@@ -23,7 +23,7 @@ from scipy import ndimage, signal
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
-from rehearsal_master import config, note_eq  # noqa: E402
+from mooz import config, note_eq  # noqa: E402
 
 FS = 48000
 LEVEL = 10 ** (-12 / 20)
@@ -41,7 +41,7 @@ def main() -> None:
     ap.add_argument("--start", type=float, default=40.0)
     a = ap.parse_args()
     base = ROOT / "processed/experiments/bass_sr" / a.song
-    studio = json.loads((ROOT / "rehearsal_master/references/raw_multitracks.json").read_text())
+    studio = json.loads((ROOT / "mooz/references/raw_multitracks.json").read_text())
     rt = np.interp(np.log(CENTS), np.log(studio["grid_hz"]), np.array(studio["instruments"]["bass"]["tone"]))
     rt -= rt[CENTS.index(100)]
     an = np.load(ROOT / "processed/experiments/bass_note_eq" / a.song / "raw/analysis.npz")

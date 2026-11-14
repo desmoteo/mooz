@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from rehearsal_master import config
+from mooz import config
 
 
 def _user(tmp_path: Path, text: str) -> Path:

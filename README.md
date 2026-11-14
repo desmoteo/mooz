@@ -1,27 +1,39 @@
-# rehearsal-master
+# Mooz
 
-Turns stereo rehearsal recordings (one recorder in the room, e.g. a Zoom) into balanced,
-mastered tracks: stems separated on the GPU, cleaned and processed one by one, the drum kit
-mixed as one instrument, the band remixed and mastered, every stage saved for listening.
-Originals are never modified. How it works: [docs/DESIGN.md](docs/DESIGN.md). Where it is
-going (a simpler chain; not implemented yet): [docs/PLAN.md](docs/PLAN.md).
+Mooz (Master Out Of Zoom) turns stereo rehearsal recordings (one recorder in the room, e.g. a
+Zoom) into balanced, mastered tracks: stems separated on the GPU, cleaned and processed one by
+one, the drum kit mixed as one instrument, the band remixed and mastered, every stage saved for
+listening. Originals are never modified. How it works: [docs/DESIGN.md](docs/DESIGN.md). Where
+it stands and what is next: [docs/PLAN.md](docs/PLAN.md). The web app: [docs/GUI.md](docs/GUI.md).
 
 ## Usage
 
+In a browser: projects, takes and profiles to tick, a Remaster button, progress by stage, the
+settings and every profile in a form. Each take has a page of its own that draws the pipeline,
+with the recording, the stems, every stage and the master to play at the same moment of the song.
+
 ```sh
-uv run rehearsal-master                       # the recordings in rehearsal.toml's [input], with its [input] presets
-uv run rehearsal-master "260928_224856_TrLR Miramare.WAV"   # one recording (or a whole take: any of its files)
-uv run rehearsal-master ~/rehearsals/2026-10-05      # a whole folder, with its take folders
-uv run rehearsal-master --preset simple_bass  # the shorter bass chain -> processed/simple_bass/
-uv run rehearsal-master --separate-only       # only separate every track into the cache
-uv run rehearsal-master --ab                  # also write loudness-matched A/B files
-uv run rehearsal-master --preset albini       # Steve Albini-style mix -> processed/albini/
-uv run rehearsal-master --preset indie        # gritty indie / garage rock -> processed/indie/
-uv run rehearsal-master --preset modern       # modern pop-rock, radio-ready -> processed/modern/
-uv run rehearsal-master --preset interpol     # dark post-punk, Interpol-like -> processed/interpol/
-uv run rehearsal-master --target -16          # loudness target (LUFS)
-uv run rehearsal-master --analyze             # measure only, write nothing
-uv run rehearsal-master --learn-balance       # print level targets learnt from all songs
+uv run mooz-gui                   # http://127.0.0.1:8377, on this machine only
+```
+
+Or on the command line, which is what the web app runs:
+
+```sh
+uv run mooz                       # the recordings in rehearsal.toml's [input], with its [input] presets
+uv run mooz "260928_224856_TrLR Miramare.WAV"   # one recording (or a whole take: any of its files)
+uv run mooz ~/rehearsals/2026-10-05      # a whole folder, with its take folders
+uv run mooz --preset simple_bass  # the shorter bass chain -> processed/simple_bass/
+uv run mooz --preset default --preset albini   # several: every take once per preset ("default": none)
+uv run mooz --separate-only       # only separate every track into the cache
+uv run mooz --ab                  # also write loudness-matched A/B files
+uv run mooz --preset albini       # Steve Albini-style mix -> processed/albini/
+uv run mooz --preset indie        # gritty indie / garage rock -> processed/indie/
+uv run mooz --preset modern       # modern pop-rock, radio-ready -> processed/modern/
+uv run mooz --preset interpol     # dark post-punk, Interpol-like -> processed/interpol/
+uv run mooz --target -16          # loudness target (LUFS)
+uv run mooz --analyze             # measure only, write nothing
+uv run mooz --no-chain-cache      # run every stem's chain again (they are kept from run to run otherwise)
+uv run mooz --learn-balance       # print level targets learnt from all songs
 ```
 
 The tape stage uses Chowdhury DSP's free CHOW Tape Model (VST3). Install it once; without
@@ -161,18 +173,22 @@ In `processed/full/` and `processed/simple_bass/` (or the preset's folder), for 
   - *Drums:* tight and driving, with reverb on the snare.
   - *Mix:* a darker tone, −14 LUFS.
 
-Presets live in [rehearsal_master/presets/](rehearsal_master/presets/) and win over
+Presets live in [mooz/presets/](mooz/presets/) and win over
 `rehearsal.toml`; the song's style (only with `character.adapt = true`) and the per-song
-`[files]` settings apply on top, in that order.
+`[files]` settings apply on top, in that order. A project can have presets of its own:
+`presets/<name>.toml` next to its `rehearsal.toml`, used by name like the built-in ones (the web
+app calls them profiles and can make one from a copy). Give each its own `[output] dir`, or it
+overwrites the default's masters.
 
 ## Tuning
 
 Put changes in `rehearsal.toml` (only the keys you change; every option is explained in
-[defaults.toml](rehearsal_master/defaults.toml)). Per song: `[files."<part of name>"]`.
+[defaults.toml](mooz/defaults.toml)). Per song: `[files."<part of name>"]`.
 
 | it sounds… | try |
 |---|---|
-| voice / bass too dry and upfront, or too roomy | `[multitrack] close_share = { vocals = 0.6, bass = 0.5, guitar = 0.7, other = 0.6 }` (less of the close track; more: 0.9) |
+| the bass thin at the bottom on a take with a close track | it should not be: below 250 Hz the close bass is turned to the room's phase so the two add (`[multitrack] phase_below_hz`); `{ bass = 0.0 }` gives the earlier merge, to compare |
+| voice / bass too dry and upfront, or too roomy | `[multitrack] close_share = { vocals = 0.8, bass = 0.7, guitar = 0.9, other = 0.9 }` (more of the room's stem; the default is 0.9 for all: the close stem with a tenth of the room's) |
 | an instrument on the close track left out, or bleed let in | see `[multitrack]`: `min_level_lu` (default −15), `stems` (add `"other"`) |
 | too much of the room recording / too processed | `[mix] original_share = 0.05` (drier, the stems in front) .. `0.35` (closer to the recording; 0 = stems only; the band's `rehearsal.toml` has 0.10, the default 0.25) |
 | muddy / boxy | `eq.strength = 0.9` |
@@ -237,6 +253,6 @@ Background reading, with how this pipeline compares: [docs/RESEARCH.md](docs/RES
 ## Development
 
 ```sh
-uv run pytest          # 80 checks, about 90 s: DSP, settings, takes and close tracks, the pipeline end to end, the separation library's internals
+uv run pytest          # 103 checks, about 2 min: DSP, settings, takes and close tracks, the pipeline end to end, the web app, the separation library's internals
 uv run --with remotezip --with requests python tools/build_raw_references.py   # rebuild the raw-track references
 ```

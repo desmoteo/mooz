@@ -1,4 +1,4 @@
-"""Prototypes for the bass stem's clean-up and body (before they go into rehearsal_master):
+"""Prototypes for the bass stem's clean-up and body (before they go into mooz):
 
   pitch(x)          pyin on the low band, octave-corrected: a weak fundamental (the room and the
                     recorder lose 40-60 Hz) makes pyin report the octave above; when the octave

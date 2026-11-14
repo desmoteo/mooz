@@ -48,7 +48,7 @@ def pin() -> None:
     import json
     import urllib.request
 
-    from rehearsal_master.separate import MODEL_DIR
+    from mooz.separate import MODEL_DIR
 
     tree = {f["path"]: f for f in json.load(urllib.request.urlopen(
         "https://huggingface.co/api/models/noblebarkrr/mvsepless_resources/tree/main?recursive=1")) if f["type"] == "file"}
@@ -71,7 +71,7 @@ def check() -> None:
     import soundfile as sf
     from audio_separator.separator import Separator
 
-    from rehearsal_master import separate
+    from mooz import separate
 
     work = ROOT / "processed" / "experiments" / "sep_bench" / "_check"
     work.mkdir(parents=True, exist_ok=True)

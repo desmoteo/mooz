@@ -6,7 +6,16 @@ loudest stem is bleed, and stays out. What stays is lined up with the same instr
 whole-song and sample-accurate: the room hears a mixer's feed through an amp or a PA, several
 metres and sometimes the opposite polarity away (on the band's recordings the voice 10 ms later and
 inverted, the bass 11 ms later), and added as they come the two would cancel. It is then set by
-loudness against the room stem, close_share of the two parts' loudness, and added to it.
+loudness against the room stem, close_share of the two parts' loudness, and added to it: the close
+stem prevails, with a little of the room. The sum is brought to level_lu over the room's own stem,
+so the share changes what the stem is made of and not how loud it reaches the balance.
+
+One delay lines the two up where the instrument's body is, not at the bottom: a mixer's low cut and
+the room turn the phase of the lowest notes differently (the band's bass: 150 degrees apart at
+63 Hz once lined up, so the two parts took 4-6 dB from each other there). Below phase_below_hz the
+close stem's phase is therefore turned to the room's, band by band, its level untouched
+(phase_to_room). The room is the reference because everything else is in its phase: the other
+stems, and the original recording that goes under the mix.
 
 The result is one stem per instrument, with the room's name, so all that follows (profiles,
 triggers, chains, balance) works on it as on any stem. The room's own stems stay what the original
@@ -25,11 +34,12 @@ from pathlib import Path
 import numpy as np
 import scipy.fft
 import soundfile as sf
+from scipy import signal
 
 from . import cleanup, loudness
 from .takes import Take
 
-VERSION = 1
+VERSION = 3  # 2: the merged stem at a set loudness over the room's; 3: the close stem's lows turned to the room's phase
 
 
 def _read_mono(f: Path) -> np.ndarray:
@@ -55,6 +65,43 @@ def delay_to_room(room: np.ndarray, close: np.ndarray, fs: float, lo: float, hi:
     c, lags = c[near], lags[near]
     i = int(np.argmax(np.abs(c)))
     return int(lags[i]), int(np.sign(c[i])), float(np.abs(c[i]) / (np.median(np.abs(c)) + 1e-20))
+
+
+PHASE_SEG = 1 << 14   # the phase is measured in windows of this many samples (0.34 s at 48 kHz: 3 Hz apart)
+PHASE_TAPS = 1 << 15  # and turned by a filter this long, the same before and after its middle
+
+
+def phase_to_room(room: np.ndarray, close: np.ndarray, fs: float, below_hz: float) -> tuple[np.ndarray, dict]:
+    """The lined-up close signal with its phase turned to the room's below below_hz; its spectrum
+    stays as it is (an all-pass). The phase between the two is their cross-spectrum's, averaged
+    over the take and over a third of an octave; it is followed fully where the two are clearly
+    the same sound (coherence over 0.6), not at all where they are not (under 0.3) or from
+    below_hz up, and in between part of the way. Returns the signal and what was found: the phase
+    (degrees, close ahead of the room) and the coherence at the third octaves below below_hz."""
+    f, prc = signal.csd(room, close, fs, nperseg=PHASE_SEG)
+    _, prr = signal.welch(room, fs, nperseg=PHASE_SEG)
+    _, pcc = signal.welch(close, fs, nperseg=PHASE_SEG)
+    turn = np.ones(len(f), dtype=complex)
+    found = {}
+    centres = [c for c in (31.5, 40, 50, 63, 80, 100, 125, 160, 200, 250, 315, 400, 500, 630, 800) if c < below_hz]
+    for i in np.flatnonzero((f >= 25.0) & (f < below_hz)):
+        k = (f >= f[i] / 2 ** (1 / 6)) & (f < f[i] * 2 ** (1 / 6))
+        x = prc[k].sum()
+        coherence = abs(x) / (np.sqrt(prr[k].sum() * pcc[k].sum()) + 1e-30)
+        # how far to follow it: all the way up to 0.7 of below_hz, then less and less; and only what is the same sound
+        w = np.clip((coherence - 0.3) / 0.3, 0.0, 1.0) * np.clip((below_hz - f[i]) / (0.3 * below_hz), 0.0, 1.0) * np.clip((f[i] - 25.0) / 10.0, 0.0, 1.0)
+        u = w * np.conj(x) / (abs(x) + 1e-30) + (1.0 - w)  # between "turned to the room" and "as it is", the short way round
+        turn[i] = u / abs(u) if abs(u) > 1e-3 else 1.0
+    for c in centres:
+        k = (f >= c / 2 ** (1 / 6)) & (f < c * 2 ** (1 / 6))
+        x = prc[k].sum()
+        found[f"{c:g}"] = [round(float(np.degrees(np.angle(x)))), round(float(abs(x) / (np.sqrt(prr[k].sum() * pcc[k].sum()) + 1e-30)), 2)]
+    grid = np.fft.rfftfreq(PHASE_TAPS, 1 / fs)
+    h = np.interp(grid, f, turn.real) + 1j * np.interp(grid, f, turn.imag)
+    h /= np.abs(h) + 1e-30
+    taps = np.fft.fftshift(np.fft.irfft(h, PHASE_TAPS)) * signal.windows.tukey(PHASE_TAPS, 0.25)
+    out = signal.oaconvolve(close, taps, mode="full")[PHASE_TAPS // 2 : PHASE_TAPS // 2 + len(close)]
+    return out.astype(close.dtype), {"below_hz": below_hz, "phase_deg_and_coherence": found}
 
 
 def _steady(room: np.ndarray, close: np.ndarray, fs: float, lo: float, hi: float, max_ms: float, d: int, sign: int,
@@ -154,7 +201,11 @@ def merge(take: Take, room_stems: dict[str, Path], close_stems: dict[str, dict[s
             if peak < mcfg["min_peak"]:  # no clear answer: nothing to line up with, so nothing to cancel either
                 d, sign = 0, 1
                 info["note"] = "not lined up: no clear delay"
-            sum_close += (sign * shifted(c, d, len(room)))[:, None]
+            c = sign * shifted(c, d, len(room))
+            below = mcfg["phase_below_hz"][n]
+            if below > 0 and "note" not in info:  # lined up: its lowest notes turned to the room's phase, so the two add
+                c, info["phase"] = phase_to_room(room_mono, c, fs, below)
+            sum_close += c[:, None]
         lr, lc = loudness.integrated(room, fs), loudness.integrated(sum_close, fs)
         share = mcfg["close_share"][n]
         if np.isfinite(lr) and np.isfinite(lc):
@@ -162,8 +213,12 @@ def merge(take: Take, room_stems: dict[str, Path], close_stems: dict[str, dict[s
         else:  # the room hardly hears it: the close stem alone, as loud as the room's whole recording could not tell
             gain = 1.0
         merged = room + gain * sum_close
+        lm = loudness.integrated(merged, fs)
+        both = 10 ** ((lr + mcfg["level_lu"] - lm) / 20) if np.isfinite(lr) and np.isfinite(lm) else 1.0
+        merged *= both
         sf.write(dst, merged, fs, subtype="FLOAT")
-        report.setdefault("merged", {})[n] = {"tracks": use[n], "close_share": share, "gain_db": round(20 * np.log10(gain), 1),
+        report.setdefault("merged", {})[n] = {"tracks": use[n], "close_share": share, "gain_db": round(20 * np.log10(gain * both), 1),
+                                              "room_gain_db": round(20 * np.log10(both), 1),
                                               "lufs": round(loudness.integrated(merged, fs), 1)}
     stems = {n: out / f"{n}.wav" for n in names}
     (out / "_merge.json").write_text(json.dumps(report, indent=1, default=float))

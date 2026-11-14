@@ -4,7 +4,7 @@ import sys, numpy as np, soundfile as sf
 from pathlib import Path
 from scipy import signal
 sys.path.insert(0,".")
-from rehearsal_master import augment
+from mooz import augment
 R=Path("new_tracks/drive-download-20261107T141948Z-1-001/processed")
 D=R/"stems_ensemble/261105_235855 Biancaneve"; M=D/"models"
 FS=48000; H=int(0.05*FS)

@@ -12,7 +12,7 @@ fs = 48000; A, B = 60, 120
 rd = lambda f: sf.read(f, dtype="float64", always_2d=True, start=A * fs, stop=B * fs)[0] * 10 ** (12 / 20)
 r = json.load(open(f"processed/ensemble/reports/{song}.json"))["tracks"]["bass"]
 print("bass report:", {k: r[k] for k in ("harmonic_clean", "bass_fundamental") if k in r})
-ref = json.load(open("rehearsal_master/references/raw_multitracks.json")); grid = np.array(ref["grid_hz"])
+ref = json.load(open("mooz/references/raw_multitracks.json")); grid = np.array(ref["grid_hz"])
 def bands(x, cents):
     f, P = signal.welch(x.mean(1), fs, nperseg=1 << 15)
     return 10 * np.log10(np.array([P[(f >= c / 2 ** (1/6)) & (f < c * 2 ** (1/6))].sum() for c in cents]) + 1e-30)

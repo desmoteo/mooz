@@ -20,7 +20,7 @@ import soundfile as sf
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
-from rehearsal_master import config, separate, stages  # noqa: E402
+from mooz import config, separate, stages  # noqa: E402
 
 wav = ROOT / (sys.argv[1] if len(sys.argv) > 1 else "260924_230957_TrLR Stanza OK.WAV")
 MODEL = sys.argv[2] if len(sys.argv) > 2 else "bs_bass_xlancer.ckpt"

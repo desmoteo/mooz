@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np, soundfile as sf
 from scipy import signal
 sys.path.insert(0, ".")
-from rehearsal_master import multitrack, loudness
+from mooz import multitrack, loudness
 root, take = Path(sys.argv[1]), sys.argv[2]; FS = 48000
 rd, cd = root / "processed/stems_ensemble" / take, root / "processed/stems_close" / f"{take} Tr2"
 B = ((50,100),(100,200),(200,400),(400,800),(800,1600),(1600,3200),(3200,6400))

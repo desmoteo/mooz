@@ -1,0 +1,4 @@
+# Listening trial of 11 November 2026: the settings as they are (trial-base), with the close bass stem's lows turned to the
+# room's phase in the merge ([multitrack] phase_below_hz, now a default). Against trial-base: that change alone.
+[output]
+dir = "processed/trial-lows"

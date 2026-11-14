@@ -7,7 +7,7 @@ import json, glob, sys, pathlib
 import numpy as np, soundfile as sf
 from scipy import signal
 sys.path.insert(0, ".")
-from rehearsal_master import effects, cleanup
+from mooz import effects, cleanup
 FR, LO, HI = 0.01, 1200.0, 12000.0
 def frames_db(x, fs):
     b = signal.sosfilt(signal.butter(4, [LO, HI], "bandpass", fs=fs, output="sos"), x, axis=0)

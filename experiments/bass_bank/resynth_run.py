@@ -24,7 +24,7 @@ import bass_level  # noqa: E402
 import resynth  # noqa: E402
 from studio_profile import REGISTERS, by_register, harmonic_db  # noqa: E402
 
-from rehearsal_master import config, note_eq, stages  # noqa: E402
+from mooz import config, note_eq, stages  # noqa: E402
 
 song = sys.argv[1] if len(sys.argv) > 1 else "260924_230957_TrLR Stanza OK"
 out = ROOT / "processed/experiments/bass_bank" / song / "resynth"

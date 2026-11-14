@@ -1,6 +1,6 @@
 """Write the separation input of each song: the whole recording with the pipeline's own
 rumble filter and hum notches (the same signal the RoFormer chain separates, so the new
-stems line up sample for sample with processed/stems/). Read-only use of rehearsal_master.
+stems line up sample for sample with processed/stems/). Read-only use of mooz.
 
     uv run python experiments/prompt_sep/prep.py [song.WAV ...]
 """
@@ -12,7 +12,7 @@ import numpy as np
 import soundfile as sf
 from scipy import signal
 
-from rehearsal_master import cleanup, config, loudness, trim
+from mooz import cleanup, config, loudness, trim
 
 ROOT = Path(__file__).resolve().parents[2]
 OUT = Path(__file__).resolve().parent / "inputs"

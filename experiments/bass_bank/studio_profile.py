@@ -16,7 +16,7 @@ from scipy import signal
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
-from rehearsal_master import augment, config  # noqa: E402
+from mooz import augment, config  # noqa: E402
 
 FS = 48000
 K = 10

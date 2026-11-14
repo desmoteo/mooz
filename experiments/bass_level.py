@@ -11,7 +11,7 @@ The separated bass stem sits about -18 LUFS, and the experiments used to write i
 
   uv run python experiments/bass_level.py      re-levels every bass experiment folder written the old way
 
-Only numpy/scipy/soundfile and rehearsal_master.loudness: usable from the AudioSR / UniverSR environments too.
+Only numpy/scipy/soundfile and mooz.loudness: usable from the AudioSR / UniverSR environments too.
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ import soundfile as sf
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from rehearsal_master import loudness  # noqa: E402
+from mooz import loudness  # noqa: E402
 
 TARGET_LUFS = -16.0
 TP_MAX_DB = -1.0

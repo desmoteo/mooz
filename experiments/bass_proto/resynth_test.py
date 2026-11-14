@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np, soundfile as sf
 from scipy import signal
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from rehearsal_master import augment, config, dynamics
+from mooz import augment, config, dynamics
 song = "260928_224856_TrLR Miramare"; fs = 48000
 OUT = Path("processed/experiments/bass_proto") / song
 t0 = json.load(open(f"processed/reports/{song}.json"))["trim"]["start_s"]

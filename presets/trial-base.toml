@@ -1,0 +1,5 @@
+# trial-base: the project's settings as they are, into a folder of their own. The other side of a listening
+# trial: compare it with trial-pro, take by take, on the take's page.
+
+[output]
+dir = "processed/trial-base"

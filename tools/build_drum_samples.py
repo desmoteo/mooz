@@ -6,7 +6,7 @@ From each track's first minute the clean hits (no other hit of it within the sam
 length) are aligned and averaged, in two velocity layers (loud: the top quarter; soft:
 around the median). Hi-hat hits are mostly noise, which averaging would cancel (a dull,
 blurred hat): for them one real hit per layer (the clean hit nearest the 85th / 50th
-velocity percentile). Written to ~/.cache/rehearsal-master/drum_samples/<drum>/ as FLAC with
+velocity percentile). Written to ~/.cache/mooz/drum_samples/<drum>/ as FLAC with
 an index.json (pitch, brightness, source). Kept out of the repository: the multitracks may
 be used, not redistributed.
 
@@ -31,9 +31,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from build_raw_references import FS, PICK, URL, _decode, _member_prefix  # noqa: E402
 
-from rehearsal_master import augment  # noqa: E402
+from mooz import augment  # noqa: E402
 
-OUT = Path.home() / ".cache" / "rehearsal-master" / "drum_samples"
+OUT = Path.home() / ".cache" / "mooz" / "drum_samples"
 DRUMS = {"kick": (40.0, 150.0, 0.45), "snare": (150.0, 400.0, 0.4), "toms": (70.0, 400.0, 0.7),
          "hihat": (5000.0, 14000.0, 0.2)}  # band, length s
 SINGLE = {"hihat"}  # one real hit per layer, not an average

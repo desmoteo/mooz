@@ -1,16 +1,17 @@
-"""Command line: rehearsal-master [files or folders] [options]"""
+"""Command line: mooz [files or folders] [options]"""
 
 from __future__ import annotations
 
 import argparse
 import os
 import shutil
+import signal
 import sys
 import time
 import traceback
 from pathlib import Path
 
-from . import config, pipeline, takes
+from . import config, pipeline, progress, takes
 
 
 def _row(label: str, s: dict) -> str:
@@ -49,6 +50,10 @@ def _print(rep: dict) -> None:
     print(_row("original", rep["original"]))
     if "processed" in rep:
         print(_row("processed", rep["processed"]))
+    kept = rep.get("chains")
+    if kept and kept["reused"]:
+        print(f"  chains    {len(kept['reused'])} kept from an earlier run"
+              + (f", made again: {', '.join(kept['made'])}" if kept["made"] else ", none made again"))
     tracks = rep.get("tracks", {})
     remix = tracks.get("remix")
     if remix:
@@ -190,7 +195,7 @@ def _run_in_memory_scope() -> None:
         return
     os.environ["_REHEARSAL_IN_SCOPE"] = "1"
     os.execvp("systemd-run", ["systemd-run", "--user", "--scope", "--quiet", "-p", f"MemoryMax={limit}",
-                              "-p", "MemorySwapMax=0", sys.executable, "-m", "rehearsal_master.cli", *sys.argv[1:]])
+                              "-p", "MemorySwapMax=0", sys.executable, "-m", "mooz.cli", *sys.argv[1:]])
 
 
 def _learn_balance(reports: Path, cfg: dict) -> None:
@@ -254,10 +259,27 @@ def _print_targets(section: str, groups: list[dict], levels: dict) -> None:
     print("]")
 
 
+def _summary(rep: dict) -> dict:
+    """What a front end shows of a finished take."""
+    out = {"outputs": rep.get("outputs", {})}
+    for side in ("original", "processed"):
+        if side in rep:
+            out[side] = {k: rep[side][k] for k in ("integrated_lufs", "lra_lu", "true_peak_dbtp")}
+    if "finalize" in rep:
+        out["limited_pct"] = rep["finalize"]["limiter"]["limited_pct"]
+    return out
+
+
+def _stop(signum, frame) -> None:
+    """SIGTERM (the web app's Cancel) leaves as an exit, so work folders are removed on the way out."""
+    sys.exit(143)
+
+
 def main(argv: list[str] | None = None) -> None:
     if argv is None:
         _run_in_memory_scope()
-    ap = argparse.ArgumentParser(prog="rehearsal-master", description=__doc__)
+        signal.signal(signal.SIGTERM, _stop)
+    ap = argparse.ArgumentParser(prog="mooz", description=__doc__)
     ap.add_argument("paths", nargs="*", type=Path,
                     help="recordings: files or folders (default: [input] paths in the settings, else the current folder)")
     ap.add_argument("-c", "--config", type=Path,
@@ -266,7 +288,11 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--analyze", action="store_true", help="only measure and show the planned EQ, write nothing")
     ap.add_argument("--ab", action="store_true", help="also write <name>_AB.wav, alternating original/processed at equal loudness")
     ap.add_argument("--no-mp3", action="store_true", help="skip MP3 export")
-    ap.add_argument("--preset", metavar="NAME", help=f"mixing preset on top of the defaults ({', '.join(config.presets())})")
+    ap.add_argument("--no-chain-cache", action="store_true",
+                    help="run every stem's chain again and keep none for the next run ([chains] enabled = false)")
+    ap.add_argument("--preset", metavar="NAME", action="append",
+                    help=f"mixing preset on top of the defaults ({', '.join(config.presets())}, or one of the project's own in "
+                         "presets/ next to its settings file); several: every take once per preset; 'default': no preset")
     ap.add_argument("--separate-only", action="store_true", help="only separate every track into the cache, then exit")
     ap.add_argument("--learn-balance", action="store_true",
                     help="print balance targets learnt from the songs' reports (median, outliers removed), then exit")
@@ -280,19 +306,23 @@ def main(argv: list[str] | None = None) -> None:
         overrides["loudness"] = {"target_lufs": args.target}
     if args.no_mp3:
         overrides["output"] = {"mp3": False}
+    if args.no_chain_cache:
+        overrides["chains"] = {"enabled": False}
     base = config.load(cfg_path, None, overrides)
     paths = args.paths
     if not paths:
         here = cfg_path.parent if cfg_path else Path(".")
         paths = [here / p for p in base["input"]["paths"]] or [Path(".")]
-    presets = [args.preset] if args.preset else (base["input"]["presets"] or [""])
+    presets = (["" if p == "default" else p for p in args.preset] if args.preset
+               else (base["input"]["presets"] or [""]))
 
     if args.learn_balance:
         where = paths[0] if paths[0].is_dir() else paths[0].parent  # the recordings' folder
-        _learn_balance(where / config.load(cfg_path, args.preset, overrides)["output"]["dir"] / "reports", base)
+        _learn_balance(where / config.load(cfg_path, presets[0] or None, overrides)["output"]["dir"] / "reports", base)
         return
     # never re-process our own output, whichever folder it is in
-    skip = {Path(base["output"]["dir"]).parts[0], Path(base["output"]["stems_dir"]).parts[0], "experiments", "prove", ".venv"}
+    skip = {Path(base["output"]["dir"]).parts[0], Path(base["output"]["stems_dir"]).parts[0],
+            Path(base["chains"]["dir"]).parts[0], "experiments", "prove", ".venv"}
     try:
         found = takes.discover(paths, skip, base["multitrack"]["room"])
     except (FileNotFoundError, ValueError) as e:
@@ -300,30 +330,41 @@ def main(argv: list[str] | None = None) -> None:
     if not found:
         sys.exit("no audio files found")
     failed = []
+    unit = 0  # the take and preset being worked on, as numbered in the plan (progress.py)
     if args.separate_only:
+        progress.emit("plan", units=[{"take": t.name, "preset": ""} for t in found], separate_only=True)
         for take in found:
             print(f"\n{take.name}: room {take.room.name}" + "".join(f", {k} {p.name}" for k, p in take.close.items()), flush=True)
+            progress.emit("unit", i=unit)
             t0 = time.time()
+            err = None
             try:
                 pipeline.separate_take(take, config.for_file(base, take.name))
             except Exception as e:
                 traceback.print_exc()
                 failed.append(take.name)
-                print(f"  FAILED: {type(e).__name__}: {e}", file=sys.stderr)
+                err = f"{type(e).__name__}: {e}"
+                print(f"  FAILED: {err}", file=sys.stderr)
             print(f"  ({time.time() - t0:.0f}s)", flush=True)
+            progress.emit("unit_done", i=unit, ok=err is None, seconds=round(time.time() - t0, 1), error=err)
+            unit += 1
     else:
+        progress.emit("plan", units=[{"take": t.name, "preset": p} for p in presets for t in found], separate_only=False)
         for preset in presets:
             cfg = config.load(cfg_path, preset or None, overrides)
             print(f"settings: {cfg_path or 'built-in defaults'}" + (f" + preset {preset}" if preset else ""))
             if not args.analyze:  # all the takes' stems first: each song's tone targets are then the same, whatever the order
-                for take in found:
-                    if take.close:
-                        try:
-                            pipeline.separate_take(take, config.for_file(cfg, take.name))
-                        except Exception as e:  # reported again below, when this take's turn comes
-                            print(f"  {take.name}: {type(e).__name__}: {e}", file=sys.stderr)
+                ahead = [t for t in found if t.close]
+                for k, take in enumerate(ahead):
+                    progress.emit("prepare", take=take.name, i=k, n=len(ahead))
+                    try:
+                        pipeline.separate_take(take, config.for_file(cfg, take.name))
+                    except Exception as e:  # reported again below, when this take's turn comes
+                        print(f"  {take.name}: {type(e).__name__}: {e}", file=sys.stderr)
             for take in found:
                 print(f"\n{take.name}" + (f" [{preset}]" if preset else ""))
+                progress.emit("unit", i=unit)
+                unit += 1
                 t0 = time.time()
                 try:
                     rep = pipeline.process_file(take, config.for_file(cfg, take.name), analyze_only=args.analyze, ab=args.ab)
@@ -331,9 +372,13 @@ def main(argv: list[str] | None = None) -> None:
                     traceback.print_exc()
                     print(f"  FAILED after {time.time() - t0:.0f}s: {type(e).__name__}: {e}", file=sys.stderr)
                     failed.append(f"{take.name}" + (f" [{preset}]" if preset else ""))
+                    progress.emit("unit_done", i=unit - 1, ok=False, seconds=round(time.time() - t0, 1),
+                                  error=f"{type(e).__name__}: {e}")
                     continue
                 _print(rep)
                 print(f"  ({time.time() - t0:.0f}s)", flush=True)
+                progress.emit("unit_done", i=unit - 1, ok=True, seconds=round(time.time() - t0, 1), summary=_summary(rep))
+    progress.emit("end", failed=failed)
     if failed:
         sys.exit(f"\n{len(failed)} failed: {', '.join(failed)}")
 

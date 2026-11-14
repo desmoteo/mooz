@@ -1,5 +1,5 @@
 # Settings for the recordings in this folder. List only what you want to change;
-# every option, with an explanation, is in rehearsal_master/defaults.toml.
+# every option, with an explanation, is in mooz/defaults.toml.
 # Order of precedence: defaults < this file < --preset < the song's style < [files."..."].
 
 [input]

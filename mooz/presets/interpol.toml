@@ -5,7 +5,7 @@
 # interlocking, trebly guitars, panned apart, through chorus and dotted-eighth delays. A
 # baritone vocal that sits inside the band in a long plate, with slapback and a quarter-note
 # echo, not on top of it. Tight, driving drums with reverb on the snare. A darker overall tone.
-# Written to processed/interpol/:  uv run rehearsal-master --preset interpol
+# Written to processed/interpol/:  uv run mooz --preset interpol
 
 [output]
 dir = "processed/interpol"

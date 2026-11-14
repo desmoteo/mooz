@@ -46,7 +46,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 sys.path.insert(0, str(ROOT))
 import build_raw_references as raw  # noqa: E402
 
-from rehearsal_master import loudness  # noqa: E402
+from mooz import loudness  # noqa: E402
 
 OUT = ROOT / "processed" / "experiments" / "sep_bench" / "data"  # the data drive: the system disk is nearly full
 INDEX = OUT / "rawstems_index.json"

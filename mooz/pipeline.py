@@ -17,7 +17,7 @@ import numpy as np
 import soundfile as sf
 from scipy import signal
 
-from . import bed, character, cleanup, config, dynamics, effects, eq, export, loudness, multitrack, profile, separate, space, stages, stereo, takes, trim
+from . import bed, chaincache, character, cleanup, config, dynamics, effects, eq, export, loudness, multitrack, profile, progress, separate, space, stages, stereo, takes, trim
 
 
 def _finalize(x: np.ndarray, fs: int, cfg: dict) -> tuple[np.ndarray, np.ndarray, dict]:
@@ -222,7 +222,8 @@ def _balance(out: np.ndarray, original: np.ndarray, g_orig: float, processed_fil
 def _tracks(y: np.ndarray, fs: int, cfg: dict, stems: dict[str, Path] | None, start: int, end: int,
             work: Path, stems_dir: Path, details: dict, stage: stages.StageWriter, profiles: dict | None = None,
             targets: dict | None = None, tempo_bpm: float | None = None,
-            room_stems: dict[str, Path] | None = None) -> tuple[np.ndarray, dict]:
+            room_stems: dict[str, Path] | None = None, chains: chaincache.Chains | None = None
+            ) -> tuple[np.ndarray, dict]:
     """Stages 1-5 for the stems: (3) drum clean-up, (2) studio processing of every
     stem, (4) the drum bus, (5) the sum with the original recording under it and the
     level balance. Without stems the "mix" chain runs on y. work: this run's folder for
@@ -230,7 +231,8 @@ def _tracks(y: np.ndarray, fs: int, cfg: dict, stems: dict[str, Path] | None, st
     to it). details collects per-track data for the tracks report; stage writes each
     stage for listening. profiles: each stem's stage-0 profile; targets: each
     instrument's median profile. room_stems: what y itself is made of, where stems also hold
-    close tracks (multitrack.py); by default the stems."""
+    close tracks (multitrack.py); by default the stems. chains: the take's kept stem chains
+    (chaincache.py): a stem whose chain would read what it read before is not processed again."""
     profiles, targets = profiles or {}, targets or {}
     mix_lufs = loudness.integrated(y, fs)
     if stems is None:
@@ -257,10 +259,20 @@ def _tracks(y: np.ndarray, fs: int, cfg: dict, stems: dict[str, Path] | None, st
     # Hit triggers for the ducks and gates, from the unprocessed kick/snare/tom stems (or the
     # whole drum stem with the demucs backend); those stems are processed first.
     sources = {src: (src if src in stems else "drums") for src in effects.TRIGGER_BANDS}
-    triggers = {src: effects.hit_trigger(read(stems[n]), fs, *effects.TRIGGER_BANDS[src])
-                for src, n in sources.items() if n in stems}
-    if "vocals" in stems:  # the singer's words (1-4 kHz), for the unmasking ducks of the guitars
-        triggers["vocals"] = effects.hit_trigger(read(stems["vocals"]), fs, 1000.0, 4000.0)
+    made: list[dict] = []
+
+    def hit_triggers() -> dict:  # made when the first stem needs them: not at all if every chain is kept
+        if not made:
+            t = {src: effects.hit_trigger(read(stems[n]), fs, *effects.TRIGGER_BANDS[src])
+                 for src, n in sources.items() if n in stems}
+            if "vocals" in stems:  # the singer's words (1-4 kHz), for the unmasking ducks of the guitars
+                t["vocals"] = effects.hit_trigger(read(stems["vocals"]), fs, 1000.0, 4000.0)
+            made.append(t)
+        return made[0]
+
+    # for the kept chains' keys: what tells each stem's file from another, and which ones the triggers come from
+    idents = {n: chaincache.ident(f, work) for n, f in stems.items()} if chains is not None else {}
+    trigger_stems = {src: n for src, n in (sources | {"vocals": "vocals"}).items() if n in stems}
     # Stage 3 (drums), step 1: learn the snare buzz fingerprint (this song's buzz-only frames
     # join the library of all songs), so step 2 can remove it from the drum stems below.
     zcfg = cfg["buzz"]
@@ -268,7 +280,7 @@ def _tracks(y: np.ndarray, fs: int, cfg: dict, stems: dict[str, Path] | None, st
     if zcfg["enabled"] and any(n in stems for n in zcfg["stems"]):
         library = stems_dir.parent / "_buzz"
         library.mkdir(parents=True, exist_ok=True)
-        idle_src = [triggers[k] for k in ("kick", "toms") if k in triggers]
+        idle_src = [hit_triggers()[k] for k in ("kick", "toms") if k in hit_triggers()]
         if idle_src:
             idle = effects._hold(np.max(idle_src, axis=0) > 0.08, fs, 0.3, 2.0) < 0.5
             np.save(library / f"{stems_dir.name}.npy",
@@ -279,73 +291,104 @@ def _tracks(y: np.ndarray, fs: int, cfg: dict, stems: dict[str, Path] | None, st
     kit_gr = None  # the kit gate's gain reduction (dB per sample), open when any gated stem is open
     bcfg = cfg["bed"]
     bed_taken = None  # what the bed clean-up took from the stems: taken from the original too (stage 5)
-    for name in sorted(stems, key=lambda n: n not in sources.values()):
-        raw = read(stems[name])
-        y -= read(room_of(name))
+    order = sorted(stems, key=lambda n: n not in sources.values())
+    for k, name in enumerate(order):
         tcfg = cfg["tracks"].get(name, cfg["track_defaults"])
-        if not np.isfinite(loudness.integrated(raw, fs)):
-            # nothing in it (below the loudness gate everywhere), e.g. no "other" instrument in this
-            # song: no chain, left out of the tracks report (it is in the original's share)
-            stats[name] = {"silent": True}
-            continue
-        st: dict = {}
-        detail = details[name] = effects.begin_detail(raw, fs)
-        stem = raw
-        if w_buzz is not None and name in zcfg["stems"]:  # stage 3, step 2: remove the buzz
-            protect = None
-            if name in ("snare", "toms"):  # never on the stem's own hits
-                protect = cleanup.own_hits(stem, fs, name, zcfg["protect_ms"])
-            # deeper between the stem's own hits, where it holds nothing but buzz and bleed
-            near = cleanup.own_hits(stem, fs, name, zcfg["own_hit_ms"][name])
-            zc = zcfg | {"floor_db": zcfg["stem_floor_db"][name], "between_floor_db": zcfg["stem_between_floor_db"][name]}
-            stem, st["buzz"] = cleanup.remove_buzz(stem, fs, w_buzz, zc, protect, near)
-        if bcfg["enabled"] and name in bcfg["stems"]:  # stage 3: the bed between the hat's hits (bed.py)
-            key = read(stems[bcfg["key"]]) if bcfg["key"] in stems else None
-            before = stem
-            stem, st["bed"] = bed.remove_bed(stem, fs, bcfg, key, name)
-            del key
-            if bcfg["original_follows"] and "removed_db" in st["bed"]:
-                taken = (before - stem).astype(np.float32)
-                bed_taken = taken if bed_taken is None else bed_taken + taken
-                del taken
-            del before
         prof, target = profiles.get(name), targets.get(name)
         ref = profile.reference_tone(name, eq.log_grid(fs))
         if ref is not None:
             target = (target or {}) | {"reference": ref}
-        if prof:
-            st["profile"] = profile.summary(prof)
-        stem = effects.cleanup_track(stem, fs, tcfg, triggers, st, detail, prof)
-        g = st.pop("_kit_gate_gr", None)
+        buzz_here = w_buzz is not None and name in zcfg["stems"]
+        bed_here = bcfg["enabled"] and name in bcfg["stems"]
+        key = made_of = kept = None
+        if chains is not None:  # everything this stem's chain reads: the same as before, and it is not run again
+            key, made_of = chains.key({
+                "stem": name, "file": idents[name], "span": [start, end], "fs": fs,
+                "triggers": {src: idents[n] for src, n in trigger_stems.items()},
+                "chain": tcfg, "profile": prof, "target": target,
+                "tempo_bpm": tempo_bpm if tcfg["sends"] else None,
+                "buzz": [zcfg, w_buzz] if buzz_here else None,
+                "bed": [bcfg, idents.get(bcfg["key"])] if bed_here else None,
+                "libraries": [chaincache.library(tcfg["augment"]["library"]["dir"]),
+                              chaincache.library(tcfg["cymbal_augment"]["dir"])],
+                "stages": [stage.fmt if stage else "off", name in drum_names]})
+            kept = chains.load(name, key, work)
+        progress.stage("stems", k / len(order), name + (", kept" if kept else ""))
+        y -= read(room_of(name))
+        taken = g = None  # what the bed clean-up took from this stem; its kit gate's gain reduction
+        if kept is not None:
+            st, detail, g, taken = kept.stats, kept.detail, kept.kit_gr, kept.taken
+            details[name] = detail
+            for rel, f in kept.stages.items():
+                stage.adopt(rel, f)
+            processed_files[name] = kept.proc
+        else:
+            raw = read(stems[name])
+            if not np.isfinite(loudness.integrated(raw, fs)):
+                # nothing in it (below the loudness gate everywhere), e.g. no "other" instrument in this
+                # song: no chain, left out of the tracks report (it is in the original's share)
+                stats[name] = {"silent": True}
+                continue
+            triggers = hit_triggers()
+            st = {}
+            detail = details[name] = effects.begin_detail(raw, fs)
+            staged = len(stage.written)
+            stem = raw
+            if buzz_here:  # stage 3, step 2: remove the buzz
+                protect = None
+                if name in ("snare", "toms"):  # never on the stem's own hits
+                    protect = cleanup.own_hits(stem, fs, name, zcfg["protect_ms"])
+                # deeper between the stem's own hits, where it holds nothing but buzz and bleed
+                near = cleanup.own_hits(stem, fs, name, zcfg["own_hit_ms"][name])
+                zc = zcfg | {"floor_db": zcfg["stem_floor_db"][name], "between_floor_db": zcfg["stem_between_floor_db"][name]}
+                stem, st["buzz"] = cleanup.remove_buzz(stem, fs, w_buzz, zc, protect, near)
+            if bed_here:  # stage 3: the bed between the hat's hits (bed.py)
+                bed_key = read(stems[bcfg["key"]]) if bcfg["key"] in stems else None
+                before = stem
+                stem, st["bed"] = bed.remove_bed(stem, fs, bcfg, bed_key, name)
+                del bed_key
+                if bcfg["original_follows"] and "removed_db" in st["bed"]:
+                    taken = (before - stem).astype(np.float32)
+                del before
+            if prof:
+                st["profile"] = profile.summary(prof)
+            stem = effects.cleanup_track(stem, fs, tcfg, triggers, st, detail, prof)
+            g = st.pop("_kit_gate_gr", None)
+            if name in drum_names and stage:
+                stage.write(f"3_drum_cleanup/{name}", stem, fs)
+                stage.write(f"3_drum_cleanup/{name}_removed", raw - stem, fs)
+            del raw
+            others = {k: v for k, v in triggers.items() if k != name}
+            stem = effects.studio_track(stem, fs, tcfg, st, detail, prof, target, others)  # stage 2
+            stage.write(f"2_stems/{name}", stem, fs)
+            st.pop("_pitch", None)  # the bass's pitch track, shared by its clean-up and fundamental
+            for i, smp in enumerate(st.pop("_samples", [])):  # the drum samples made from this song
+                stage.write(f"2_stems/samples/{name}_{i + 1}", smp / (np.abs(smp).max() + 1e-9) * 0.25, fs)
+            stem = effects.mix_track(stem, fs, tcfg, triggers, st, detail)
+            if tcfg["sends"]:  # its space (plate, slapback, tape echo), set relative to the dry track
+                wet, st["sends"] = space.sends(stem, fs, tcfg["sends"], tempo_bpm)
+                if wet is not None:
+                    stem = stem + wet
+                    del wet
+            effects.end_detail(detail, stem, fs)
+            st["lufs_in"] = round(detail["lufs_in"], 1)
+            st["lufs_out"] = round(detail["lufs_out"], 1) if np.isfinite(detail["lufs_out"]) else None
+            processed_files[name] = work / f"_proc_{name}.wav"
+            sf.write(processed_files[name], stem.astype(np.float32), fs, subtype="FLOAT")
+            del stem
+            if chains is not None:
+                chains.store(name, key, made_of, processed_files[name], fs, st, detail, g, taken,
+                             {rel: stage.files[rel] for rel in stage.written[staged:]})
+        if taken is not None:
+            bed_taken = taken if bed_taken is None else bed_taken + taken
         if g is not None:
             kit_gr = g if kit_gr is None else np.minimum(kit_gr, g)
-        if name in drum_names and stage:
-            stage.write(f"3_drum_cleanup/{name}", stem, fs)
-            stage.write(f"3_drum_cleanup/{name}_removed", raw - stem, fs)
-        del raw
-        others = {k: v for k, v in triggers.items() if k != name}
-        stem = effects.studio_track(stem, fs, tcfg, st, detail, prof, target, others)  # stage 2
-        stage.write(f"2_stems/{name}", stem, fs)
-        st.pop("_pitch", None)  # the bass's pitch track, shared by its clean-up and fundamental
-        for i, smp in enumerate(st.pop("_samples", [])):  # the drum samples made from this song
-            stage.write(f"2_stems/samples/{name}_{i + 1}", smp / (np.abs(smp).max() + 1e-9) * 0.25, fs)
-        stem = effects.mix_track(stem, fs, tcfg, triggers, st, detail)
-        if tcfg["sends"]:  # its space (plate, slapback, tape echo), set relative to the dry track
-            wet, st["sends"] = space.sends(stem, fs, tcfg["sends"], tempo_bpm)
-            if wet is not None:
-                stem = stem + wet
-                del wet
-        effects.end_detail(detail, stem, fs)
+        del taken, g
         stats[name] = st
-        st["lufs_in"] = round(detail["lufs_in"], 1)
-        lufs_out = detail["lufs_out"]
-        st["lufs_out"] = round(lufs_out, 1) if np.isfinite(lufs_out) else None
-        stem_lufs[name] = lufs_out if np.isfinite(lufs_out) else None
-        processed_files[name] = work / f"_proc_{name}.wav"
-        sf.write(processed_files[name], stem.astype(np.float32), fs, subtype="FLOAT")
-        del stem
-    del triggers
+        stem_lufs[name] = detail["lufs_out"] if np.isfinite(detail["lufs_out"]) else None
+    made.clear()
     # Stage 4: the drum kit as one instrument
+    progress.stage("drum_bus")
     bus, stats["drum_bus"] = _drum_bus(processed_files, stem_lufs, fs, cfg)
     kit_members = stats["drum_bus"].get("stems", []) if bus is not None else []
     if bus is not None:
@@ -362,6 +405,7 @@ def _tracks(y: np.ndarray, fs: int, cfg: dict, stems: dict[str, Path] | None, st
     # under them at [mix] original_share of the two parts' loudness (what the separation and the
     # clean-up took out comes back at that level, nothing else); the groups (vocals, guitars,
     # bass, drums) are balanced so that they sit at their targets in that blend.
+    progress.stage("blend")
     residual_lufs = loudness.integrated(y, fs)  # what the separation missed (mix - stems): reported, not added
     stats["residual"] = {"level_db": round(float(10 * np.log10((np.mean(y**2) + 1e-20) / total)), 1),
                          "lufs": round(residual_lufs, 1) if np.isfinite(residual_lufs) else None}
@@ -541,6 +585,7 @@ def process_file(path: Path | takes.Take, cfg: dict, *, analyze_only: bool = Fal
 
 def _process(take: takes.Take, cfg: dict, work: Path | None, analyze_only: bool, ab: bool) -> dict:
     path = take.room
+    progress.stage("read")
     x, fs = sf.read(path, dtype="float64", always_2d=True)
     if x.shape[1] > 2:
         print(f"  note: {x.shape[1]} channels, using the first two", file=sys.stderr)
@@ -555,6 +600,7 @@ def _process(take: takes.Take, cfg: dict, work: Path | None, analyze_only: bool,
     rep["original"] = before
 
     # Trim
+    progress.stage("prepare")
     tcfg = cfg["trim"]
     start, end = _bounds(x, fs, before["integrated_lufs"], tcfg)
     rep["trim"] = {"start_s": round(start / fs, 2), "end_s": round(end / fs, 2)}
@@ -575,6 +621,7 @@ def _process(take: takes.Take, cfg: dict, work: Path | None, analyze_only: bool,
     pre_tracks_spec = eq.band_spectrum(y, fs, grid) if cfg["eq"]["measure_before_tracks"] else None
     stems = None
     scfg = cfg["stems"]
+    progress.stage("separate")
     if not analyze_only and scfg["enabled"]:
         if separate.available(scfg["backend"]):
             stems = _cached_stems(path, full, fs, scfg, cfg, take.root / (cfg["output"]["stems_dir"] + separate.cache_name(scfg)) / take.name)
@@ -595,6 +642,7 @@ def _process(take: takes.Take, cfg: dict, work: Path | None, analyze_only: bool,
     if stems:
         # Stage 0, per stem: every raw stem profiled before any clean-up; the medians over
         # all songs are what stage 2 matches each stem to
+        progress.stage("profile")
         prof = profile.ensure(stems_dir, stems)
         targets = profile.targets(stems_dir.parent, fs)
         ps = scfg["pan_split"]
@@ -615,15 +663,28 @@ def _process(take: takes.Take, cfg: dict, work: Path | None, analyze_only: bool,
         profiles = prof["stems"]
         rep["stem_profiles"] = {n: profile.summary(p) for n, p in profiles.items() if n in stems}
     stage = stages.StageWriter(out_dir / "stages" / take.name if not analyze_only else None, cfg["output"]["stages"])
+    chains = None  # each stem's chain as an earlier run left it (chaincache.py)
+    if stems and not analyze_only and cfg["chains"]["enabled"]:
+        chains = chaincache.Chains(take.root / cfg["chains"]["dir"] / take.name, cfg["chains"]["keep"])
     # Stage 0: what kind of song this is; the mix stages adapt to its style
     ccfg = cfg["character"]
     if ccfg["enabled"]:
-        read = lambda n: sf.read(stems[n], dtype="float64", always_2d=True, start=start, stop=end)[0]  # noqa: E731
-        raw = {n: read(n) for n in ("vocals", "guitar", "guitar_left", "guitar_right") if stems and n in stems}
-        trig = ({k: effects.hit_trigger(read(n), fs, *effects.TRIGGER_BANDS[k])
-                 for k, n in (("kick", "kick"), ("snare", "snare"), ("toms", "toms")) if n in stems} if stems else None)
-        rep["character"] = character.characterise(y, fs, raw, trig)
-        del raw, trig
+        progress.stage("character")
+        melodic, hits = ("vocals", "guitar", "guitar_left", "guitar_right"), ("kick", "snare", "toms")
+
+        def characterise() -> dict:
+            read = lambda n: sf.read(stems[n], dtype="float64", always_2d=True, start=start, stop=end)[0]  # noqa: E731
+            raw = {n: read(n) for n in melodic if stems and n in stems}
+            trig = {k: effects.hit_trigger(read(k), fs, *effects.TRIGGER_BANDS[k]) for k in hits if k in stems} if stems else None
+            return character.characterise(y, fs, raw, trig)
+
+        if chains is not None:  # it reads the recording as prepared and these stems, and no settings
+            rep["character"] = chains.character(
+                {"what": "character", "recording": chaincache.ident(path), "span": [start, end], "fs": fs,
+                 "prepared": [cfg["highpass"], cfg["hum"]],
+                 "stems": {n: chaincache.ident(stems[n], work) for n in melodic + hits if n in stems}}, characterise)
+        else:
+            rep["character"] = characterise()
         style = rep["character"]["style"]
         if ccfg["adapt"] and style in ccfg["styles"]:  # the style's table, under the song's own settings
             cfg = config.for_file(cfg, take.name, style)
@@ -636,9 +697,12 @@ def _process(take: takes.Take, cfg: dict, work: Path | None, analyze_only: bool,
             stage.link_raw(stems_dir, "1_merged")
     if not analyze_only:
         y, rep["tracks"] = _tracks(y, fs, cfg, stems, start, end, work, stems_dir, details, stage, profiles, targets,
-                                   rep.get("character", {}).get("tempo_bpm"), room_stems)
+                                   rep.get("character", {}).get("tempo_bpm"), room_stems, chains)
+        if chains is not None:  # which stem chains this run made, and which it found as an earlier run left them
+            rep["chains"] = {"reused": chains.reused, "made": chains.made}
 
     # Stereo
+    progress.stage("bus")
     if cfg["stereo"]["enabled"] and stereo_in:
         y = stereo.mid_side(y, fs, cfg["stereo"]["mono_below_hz"], cfg["stereo"]["width"],
                             cfg["stereo"]["mono_ramp_hz"] or None)
@@ -690,6 +754,7 @@ def _process(take: takes.Take, cfg: dict, work: Path | None, analyze_only: bool,
     stage.write("5_mix", y, fs)  # stage 5, before loudness and limiting
 
     # Loudness, clipper, limiter, fades
+    progress.stage("master")
     y, lim_gr, rep["finalize"] = _finalize(y, fs, cfg)
     curves["limiter"] = dynamics.decimate(lim_gr, fs)
     y = trim.fade(y, fs, tcfg["fade_in_s"], tcfg["fade_out_s"])
@@ -698,6 +763,7 @@ def _process(take: takes.Take, cfg: dict, work: Path | None, analyze_only: bool,
     rep["processed"] = after
 
     # Outputs
+    progress.stage("write")
     ocfg = cfg["output"]
     out_dir.mkdir(parents=True, exist_ok=True)
     wav = out_dir / f"{take.name}.wav"
@@ -736,6 +802,7 @@ def _process(take: takes.Take, cfg: dict, work: Path | None, analyze_only: bool,
             if export.write_mp3(ab_path, ab_mp3, ocfg["mp3_bitrate"], ab_tags):
                 rep["outputs"]["ab_mp3"] = str(ab_mp3)
     if ocfg["report"]:
+        progress.stage("report")
         from . import report  # matplotlib is only imported when needed
 
         rdir = out_dir / "reports"

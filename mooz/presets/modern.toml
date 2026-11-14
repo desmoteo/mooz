@@ -6,7 +6,7 @@
 # samples at an even level on every hit, sharper and tighter; a locked low end (high-passed
 # guitars and vocals, the kick owning the sub, the bass above it and levelled hard); the two
 # guitars split and hard-panned, with a pocket carved and ducked for the voice.
-# Written to processed/modern/ (-14 LUFS):  uv run rehearsal-master --preset modern
+# Written to processed/modern/ (-14 LUFS):  uv run mooz --preset modern
 
 [output]
 dir = "processed/modern"

@@ -24,3 +24,6 @@ __pycache__/
 
 # New recordings (audio is already ignored; the zip is not)
 /new_tracks/
+
+# The web app's safety copy of the settings file before a save
+rehearsal.toml.bak

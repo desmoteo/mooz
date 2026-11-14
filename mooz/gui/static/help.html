@@ -1,0 +1,134 @@
+<article class="help">
+<h1>How it works</h1>
+<p>Mooz turns a rehearsal recording into a master. This page says what each part of the app is for, in the
+order you meet it. Nothing here does anything the <code>mooz</code> command cannot: the app starts that
+command and shows what it leaves behind.</p>
+<ul class="toc">
+  <li><a href="#/help" data-jump="h-project">Projects</a></li>
+  <li><a href="#/help" data-jump="h-takes">Takes and mastering</a></li>
+  <li><a href="#/help" data-jump="h-take">A take's page</a></li>
+  <li><a href="#/help" data-jump="h-stages">The stages</a></li>
+  <li><a href="#/help" data-jump="h-listen">Listening</a></li>
+  <li><a href="#/help" data-jump="h-blind">Comparing blind</a></li>
+  <li><a href="#/help" data-jump="h-profiles">Settings and profiles</a></li>
+  <li><a href="#/help" data-jump="h-files">Where the files are</a></li>
+</ul>
+
+<h2 id="h-project">Projects</h2>
+<p>A project is a folder of recordings and one settings file, <code>rehearsal.toml</code>. New project asks for the
+folder, shows the takes it finds there, and writes the settings file into it. A folder that already has one is taken as it is.</p>
+<p>A take is one moment recorded. A recorder that writes a file per track (<code>TrMic</code> for its own microphones,
+<code>Tr2</code> for an input, <code>TrLR</code> for its own mix-down) gives one take of several tracks: the microphones are
+the room track, the inputs are close tracks.</p>
+<p>Removing a project from the list deletes nothing on disk.</p>
+
+<h2 id="h-takes">Takes and mastering</h2>
+<ul>
+  <li>Tick the takes and the profiles to master them with, then press Remaster. One job runs at a time.</li>
+  <li>A profile is a sound: a few settings on top of the project's. Each profile's masters go to a folder of their own,
+    so a take can be compared across profiles.</li>
+  <li>While a job runs, the bar on top shows the take and the stage it is at, the time so far and an estimate of
+    what is left. Cancel stops it; takes already finished keep their masters.</li>
+  <li>Separate only does the slow part (splitting the takes into stems, on the graphics card) and keeps the stems for later.</li>
+  <li>A/B files too writes, next to each master, a file with the recording and the master in turns at the same loudness.</li>
+</ul>
+<p>Each row then shows, per profile: the master's loudness, how much of the recording's loudness range it kept, and how
+much of the time the limiter works (in orange above 5 %: the master is pushed hard). Original, Play and A/B play the
+recording, the master and the A/B file, and going between them keeps the moment of the song.</p>
+
+<h2 id="h-take">A take's page</h2>
+<p>Press a take's title, or Stages under a profile. The page draws what happened to the take, in two ways, and every
+file a run left behind can be heard from it. A third tab, Compare blind, puts two profiles' masters side by side
+(<a href="#/help" data-jump="h-blind">below</a>).</p>
+<dl>
+  <dt>Stage by stage</dt><dd>A grid. Columns are the stages, left to right; rows are the recording and its stems, the
+    drum kit last. A row is one stem's way through the pipeline. A round pad is the stem at that stage; a pad with a word
+    on it is another file at the same point (what the clean-up took out, a drum sample, the A/B file).</dd>
+  <dt>Pipeline graph</dt><dd>The same files as boxes and arrows: which goes into which. The close tracks' stems have
+    boxes of their own, with the share each puts into the merged stem on its arrow. A dashed box is a step with no file
+    of its own (a separation: press it for each model's own output) or a file that is not used (bleed on a close track).
+    Press a box and what goes into it and what comes out of it stay lit.</dd>
+</dl>
+<p>Under the drawing, for the chosen pad or box: what the take's report says the run did at that point (a stem's chain
+step by step, the levels in the mix, the limiter), and the file's path.</p>
+<p>With a take that has close tracks, the Separated column names every pad. <strong>merged</strong> is what the chain
+starts from: the close track's stem with a little of the room's. <strong>room</strong> and <strong>Tr2</strong> are what
+it is made of, each at its level in the merged stem. A dashed <strong>Tr2</strong> is not used: the instrument is only
+bleed on that track.</p>
+<p>The tabs with the profiles' names show the same take under another profile. A take not mastered with a profile yet
+has its recording and, once separated, its stems; Master this take starts a job for it alone. While a job works on the
+shown take, the stage it is at is marked.</p>
+
+<h2 id="h-stages">The stages</h2>
+<dl>
+  <dt>Recording</dt><dd>The files as recorded, whole. The room track is what the pipeline works on.</dd>
+  <dt>Separated</dt><dd>The stems the separation models find in it: voice, guitar, bass, other, and the kit split into
+    kick, snare, toms, hi-hat and cymbals. Close tracks are separated too and what they really hold (voice, bass) is
+    lined up with the room's stem and merged with it.</dd>
+  <dt>Cleaned</dt><dd>The kit's stems after the clean-up: snare buzz, bleed between drums, gates. "Taken out" is what was removed.</dd>
+  <dt>Stem chain</dt><dd>Each stem through its own chain: tone, dynamics, and samples laid under the drums' hits.</dd>
+  <dt>Drum bus</dt><dd>The kit balanced and glued as one instrument.</dd>
+  <dt>In the mix</dt><dd>Every part at its level and place, and the untouched recording under them at its share. These add up to the mix.</dd>
+  <dt>Mix</dt><dd>After the mix bus: tonal balance, compression, saturation.</dd>
+  <dt>Master</dt><dd>After loudness and the limiter: the finished file.</dd>
+</dl>
+
+<h2 id="h-listen">Listening</h2>
+<ul>
+  <li><strong>Same moment.</strong> Going from one file of a take to another keeps the moment of the song, so a change can be
+    heard on the same bar. Press the playing pad again to pause.</li>
+  <li><strong>Levels lined up.</strong> The stage files are written 12 dB under their real level so the loudest drum hits
+    do not clip. With this on, everything on a take's page plays 12 dB down, the master too, so two stages compare by ear.
+    Turn it off to hear each file as it is on disk.</li>
+  <li><strong>Keys.</strong> With a pad in focus, <kbd>←</kbd> <kbd>→</kbd> go along the stem's row and <kbd>↑</kbd> <kbd>↓</kbd>
+    down the stage's column. In the graph, <kbd>←</kbd> <kbd>→</kbd> follow the arrows and <kbd>↑</kbd> <kbd>↓</kbd> go through a
+    layer. While something plays, the next pad or box takes over.</li>
+  <li>Drum samples are short single hits: they play from their start, on their own.</li>
+</ul>
+
+<h2 id="h-blind">Comparing blind</h2>
+<p>Which of two profiles sounds better is for your ears to say, and they say it best without knowing which is which.
+On a take's page, Compare blind takes two profiles that both have a master of the take.</p>
+<ul>
+  <li>Start reads both masters and plays them in step as <strong>A</strong> and <strong>B</strong>, each turned down to the
+    quieter one's loudness. Which profile is A is drawn by lot.</li>
+  <li>A and B switch with no gap, on the same sample of the song. Loop from here and Loop to here repeat a passage:
+    a snare fill, the start of a chorus.</li>
+  <li>Keys: <kbd>A</kbd> and <kbd>B</kbd> choose the side, <kbd>X</kbd> the other one, <kbd>Space</kbd> plays and pauses,
+    <kbd>[</kbd> and <kbd>]</kbd> set the loop.</li>
+  <li>Say which sounds better, or that you hear no difference, with a few words on why if you like. Only then does the
+    page say which was which. Another round draws A and B again; several rounds on several takes say more than one.</li>
+</ul>
+<p>Every choice is kept in <code>listening.json</code> next to <code>rehearsal.toml</code>, and the takes' page adds them up
+per pair of profiles. A verdict is about the two files that were heard: when one of them is mastered again it stays in
+the list, marked, and is no longer counted. Take back removes one pressed by mistake.</p>
+
+<h2 id="h-profiles">Settings and profiles</h2>
+<ul>
+  <li>The form shows the settings changed most often. A dot marks what the project sets itself; Back to default takes
+    the setting out of the file again.</li>
+  <li>The whole file, at the bottom, is <code>rehearsal.toml</code> as text, for everything else: one song's own settings,
+    a stem's chain. Every setting is explained in <code>defaults.toml</code>, whose path the page gives.</li>
+  <li>Every profile can be edited, in the same form and as text. Changing a built-in one keeps your version in the
+    project (<code>presets/&lt;name&gt;.toml</code>); the built-in one is not touched, and Back to the built-in returns to it.</li>
+  <li>Nothing is saved that would not load: a mistake comes back as a message and the file stays as it was. The previous
+    <code>rehearsal.toml</code> is kept as <code>rehearsal.toml.bak</code>.</li>
+  <li>A changed setting is heard after the takes are mastered again. That takes about a third of the time when the
+    change is to the mix or the master: each stem's own chain is kept from the last run and used as it is, unless that
+    stem's settings changed. The job's line says "kept" next to such a stem.</li>
+</ul>
+
+<h2 id="h-files">Where the files are</h2>
+<dl>
+  <dt>Masters</dt><dd>Next to the recordings, in the profile's folder (<code>processed/</code> unless a profile or the project says otherwise).</dd>
+  <dt>Stage files</dt><dd>In <code>stages/&lt;take&gt;/</code> inside that folder, about half a gigabyte per take. They line up in a DAW.</dd>
+  <dt>Stems</dt><dd>In a cache next to the recordings, shared by every profile, so a take is separated once.</dd>
+  <dt>Kept chains</dt><dd>In <code>processed/chains/</code> next to the recordings, shared by every profile: each stem after
+    its chain, a bit over a gigabyte per take. It can be deleted at any time; the next run makes it again.</dd>
+  <dt>Verdicts</dt><dd>In <code>listening.json</code> next to <code>rehearsal.toml</code>: what the blind comparisons said.</dd>
+  <dt>Reports</dt><dd>In <code>reports/</code> inside the profile's folder: the figures as pictures, and the numbers the take's page shows.</dd>
+</dl>
+<p>Two projects over the same recordings share these folders: a profile run from one overwrites the other's masters of
+that profile.</p>
+<p>The app answers only to this machine, and has no log-in: do not put it on a network.</p>
+</article>

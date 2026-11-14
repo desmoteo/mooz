@@ -5,7 +5,7 @@
 # grinding through the guitars, guitar mids left forward with tape (not EQ) taking the
 # harsh top off, the mix on hot tape into a bus compressor that breathes with the kick. The
 # rehearsal room's real defects are still fixed (hum, snare buzz, level consistency).
-# Written to processed/indie/:  uv run rehearsal-master --preset indie
+# Written to processed/indie/:  uv run mooz --preset indie
 
 [output]
 dir = "processed/indie"

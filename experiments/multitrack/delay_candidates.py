@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np, soundfile as sf
 from scipy import signal
 sys.path.insert(0, ".")
-from rehearsal_master import multitrack, loudness
+from mooz import multitrack, loudness
 root = Path(sys.argv[1]); FS = 48000
 B = ((50,100),(100,200),(200,400),(400,800),(800,1600),(1600,3200),(3200,6400))
 SHARE = {"vocals": 0.8, "bass": 0.7}

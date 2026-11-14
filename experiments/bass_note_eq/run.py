@@ -1,4 +1,4 @@
-"""The per-note dynamic EQ (rehearsal_master/note_eq.py) on one song's bass, for listening:
+"""The per-note dynamic EQ (mooz/note_eq.py) on one song's bass, for listening:
 
   raw/        on the separated stem (stage 1), against the clean-up the pipeline uses now
               (harmonic_clean): the output, stage A alone (harmonic space), what each took out
@@ -25,7 +25,7 @@ import soundfile as sf
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
-from rehearsal_master import augment, config, effects, eq, note_eq, profile, stages  # noqa: E402
+from mooz import augment, config, effects, eq, note_eq, profile, stages  # noqa: E402
 
 song = sys.argv[1] if len(sys.argv) > 1 else "260924_230957_TrLR Stanza OK"
 SEE = (60.0, 64.0)  # the spectrogram's seconds

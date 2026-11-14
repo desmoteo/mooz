@@ -1,7 +1,7 @@
 [project]
-name = "rehearsal-master"
+name = "mooz"
 version = "0.1.0"
-description = "Clean-up and mastering pipeline for stereo band rehearsal recordings"
+description = "Mooz (Master Out Of Zoom): clean-up and mastering pipeline for stereo band rehearsal recordings"
 requires-python = ">=3.11"
 dependencies = [
     "numpy>=1.26",
@@ -9,17 +9,19 @@ dependencies = [
     "soundfile>=0.12",
     "matplotlib>=3.8",
     "librosa>=0.10",       # pitch tracking and note onsets of the bass (augment.py, note_eq.py)
+    "tomlkit>=0.13",       # the web app rewrites rehearsal.toml and keeps its comments (gui/projects.py)
 ]
 
 [project.scripts]
-rehearsal-master = "rehearsal_master.cli:main"
+mooz = "mooz.cli:main"
+mooz-gui = "mooz.gui.server:main"   # the web app (docs/GUI.md)
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["rehearsal_master"]
+packages = ["mooz"]
 
 [dependency-groups]
 dev = ["pytest>=8"]

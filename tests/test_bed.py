@@ -3,7 +3,7 @@
 import numpy as np
 from scipy import signal
 
-from rehearsal_master import bed, config
+from mooz import bed, config
 
 FS = 48000
 CFG = config.load(None)["bed"]

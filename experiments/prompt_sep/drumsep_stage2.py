@@ -1,5 +1,5 @@
 """Stage 2 for the prompt-based drums: the pipeline's own MDX23C DrumSep model (read-only
-use of rehearsal_master.separate) on SAM's drums stem, since SAM gives back the whole kit
+use of mooz.separate) on SAM's drums stem, since SAM gives back the whole kit
 for every kit-piece prompt. Writes 2_drums_drumsep/ next to 2_drums/, plus _rest.flac
 (the drums minus the pieces: the tamburello, if anywhere, and what DrumSep missed).
 
@@ -13,7 +13,7 @@ from pathlib import Path
 import numpy as np
 import soundfile as sf
 
-from rehearsal_master import config, separate
+from mooz import config, separate
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import ROOT, read_stem, write  # noqa: E402

@@ -1,7 +1,7 @@
 import numpy as np
 from scipy import signal
 
-from rehearsal_master import dynamics, eq, loudness, stereo
+from mooz import dynamics, eq, loudness, stereo
 
 FS = 48000
 rng = np.random.default_rng(1)
@@ -70,7 +70,7 @@ def test_fir_follows_requested_curve():
 
 from scipy import signal as _sig  # noqa: E402
 
-from rehearsal_master import config, effects  # noqa: E402
+from mooz import config, effects  # noqa: E402
 
 CFG = config.load(None)
 
@@ -150,7 +150,7 @@ def test_chunked_separation_reconstructs(tmp_path, monkeypatch):
     """Chunking + crossfades must not change a linear separator's output."""
     import soundfile as sf
 
-    from rehearsal_master import separate
+    from mooz import separate
 
     monkeypatch.setattr(separate, "CHUNK_S", 1.0)
     monkeypatch.setattr(separate, "OVERLAP_S", 0.25)
@@ -217,7 +217,7 @@ def test_band_duck_only_dips_its_band():
 def test_pan_split_separates_two_positions_and_sums_back(tmp_path):
     import soundfile as sf
 
-    from rehearsal_master import separate
+    from mooz import separate
 
     sr = 44100
     t = np.arange(sr * 4) / sr
@@ -238,7 +238,7 @@ def test_pan_split_separates_two_positions_and_sums_back(tmp_path):
 
 # --- clean-up --------------------------------------------------------------------------------
 
-from rehearsal_master import cleanup  # noqa: E402
+from mooz import cleanup  # noqa: E402
 
 
 def test_hum_is_found_and_notched_without_touching_nearby_notes():
@@ -330,7 +330,7 @@ def test_buzz_is_learnt_then_removed_and_hats_are_kept(tmp_path):
 def test_stage_writer_keeps_relative_levels_without_clipping(tmp_path):
     import soundfile as sf
 
-    from rehearsal_master import stages
+    from mooz import stages
 
     w = stages.StageWriter(tmp_path, "flac")
     loud = np.full((FS, 2), 2.0)  # above full scale, like the raw drum peaks
@@ -344,7 +344,7 @@ def test_stage_writer_keeps_relative_levels_without_clipping(tmp_path):
 
 
 def test_character_rules():
-    from rehearsal_master import character
+    from mooz import character
 
     base = {"contrast_lu": 5.0, "arc_lu": 0.0, "slope_lu_per_min": 0.0, "onset_rate_per_s": 3.5, "tempo_bpm": 120,
             "drums_playing_pct": 97, "guitar_flatness": 0.3}
@@ -358,7 +358,7 @@ def test_character_rules():
 def test_drum_bus_balances_the_kit(tmp_path):
     import soundfile as sf
 
-    from rehearsal_master import pipeline
+    from mooz import pipeline
 
     files, lufs = {}, {}
     for name, a in (("kick", 0.3), ("snare", 0.15), ("hihat", 0.02)):
@@ -380,7 +380,7 @@ def test_drum_bus_balances_the_kit(tmp_path):
 def test_split_steps_run_on_cached_stems_not_in_the_separation(tmp_path):
     import soundfile as sf
 
-    from rehearsal_master import separate
+    from mooz import separate
 
     step = {"split": "pan", "input": "guitar", "outputs": {"left": "gl", "right": "gr", "both": "guitar"}}
     steps = [{"model": "m.ckpt", "input": "mix", "outputs": {}}, step]
@@ -403,7 +403,7 @@ def test_split_steps_run_on_cached_stems_not_in_the_separation(tmp_path):
 def test_profile_measures_floor_tone_and_punch(tmp_path):
     import soundfile as sf
 
-    from rehearsal_master import profile
+    from mooz import profile
 
     n = FS * 20
     t = np.arange(n) / FS
@@ -429,7 +429,7 @@ def signal_lfilter_decay(x, tau_s):
 
 
 def test_tone_match_moves_towards_target_without_level_change():
-    from rehearsal_master import profile
+    from mooz import profile
 
     grid = eq.log_grid(FS)
     measured = -0.0 * grid  # flat...
@@ -446,7 +446,7 @@ def test_tone_match_moves_towards_target_without_level_change():
 
 
 def test_expander_follows_the_measured_floor_only_when_it_is_noise():
-    from rehearsal_master import config, effects
+    from mooz import config, effects
 
     cfg = config.load(None)["tracks"]["bass"]
     x = 0.1 * rng.normal(0, 1, (FS * 4, 2))
@@ -485,7 +485,7 @@ def test_vocal_room_recombination_is_exact_or_a_smooth_bounded_cut(tmp_path):
 def test_chowtape_keeps_level_and_alignment():
     import pytest
 
-    from rehearsal_master import config, plugins
+    from mooz import config, plugins
 
     cfg = config.load(None)["saturation"]["chowtape"]
     if not plugins.available(cfg["path"]):
@@ -502,7 +502,7 @@ def test_chowtape_keeps_level_and_alignment():
 # --- reinforcement: drum samples, bass fundamental, chest resonance ------------------------------
 
 def test_drum_samples_go_on_real_hits_in_phase_and_not_on_bleed():
-    from rehearsal_master import augment, config
+    from mooz import augment, config
 
     cfg = config.load(None)["tracks"]["kick"]["augment"]
     cfg = cfg | {"library": cfg["library"] | {"enabled": False}}  # the drummer's own samples only
@@ -527,7 +527,7 @@ def test_drum_samples_go_on_real_hits_in_phase_and_not_on_bleed():
 
 
 def test_bass_fundamental_is_raised_in_phase_and_leaves_harmonics():
-    from rehearsal_master import augment, config
+    from mooz import augment, config
 
     cfg = config.load(None)["tracks"]["bass"]["bass_fundamental"] | {"restore": False, "fill": 0.7}
     t = np.arange(FS * 6) / FS
@@ -548,7 +548,7 @@ def test_bass_fundamental_is_raised_in_phase_and_leaves_harmonics():
 
 
 def test_bass_fundamental_restore_brings_weak_low_notes_up_to_their_2nd_harmonic():
-    from rehearsal_master import augment, config
+    from mooz import augment, config
 
     cfg = config.load(None)["tracks"]["bass"]["bass_fundamental"]
     assert cfg["restore"]
@@ -571,7 +571,7 @@ def test_bass_fundamental_restore_brings_weak_low_notes_up_to_their_2nd_harmonic
 
 
 def test_bass_fundamental_punch_raises_the_fundamental_at_note_starts_only():
-    from rehearsal_master import augment, config
+    from mooz import augment, config
 
     cfg = config.load(None)["tracks"]["bass"]["bass_fundamental"] | {"attack_db": 3.0, "restore": False, "boost_db": 0.0}
     t = np.arange(FS * 3) / FS
@@ -588,7 +588,7 @@ def test_bass_fundamental_punch_raises_the_fundamental_at_note_starts_only():
 
 
 def test_harmonic_clean_keeps_the_harmonics_and_removes_what_lies_between():
-    from rehearsal_master import augment, config
+    from mooz import augment, config
 
     cfg = config.load(None)["tracks"]["bass"]
     t = np.arange(FS * 6) / FS
@@ -612,7 +612,7 @@ def test_harmonic_clean_keeps_the_harmonics_and_removes_what_lies_between():
 
 
 def test_note_eq_keeps_each_notes_harmonics_and_tames_a_clanky_attack():
-    from rehearsal_master import config, note_eq
+    from mooz import config, note_eq
 
     cfg = config.load(None)["tracks"]["bass"]
     rng2 = np.random.default_rng(2)
@@ -661,7 +661,7 @@ def test_note_eq_keeps_each_notes_harmonics_and_tames_a_clanky_attack():
 
 
 def test_upward_dynamic_eq_fills_thin_moments_only():
-    from rehearsal_master import effects
+    from mooz import effects
 
     t = np.arange(FS * 6) / FS
     body = 0.2 * np.sin(2 * np.pi * 180 * t) * np.where((t % 2) < 1, 1.0, 0.25)  # thin every other second
@@ -701,7 +701,7 @@ def test_balance_targets_blend_with_published_priors():
 
 
 def test_snare_gate_opens_on_hits_not_on_resonance_swells():
-    from rehearsal_master import config, effects
+    from mooz import config, effects
 
     g = config.load(None)["tracks"]["snare"]["gate"]
     n = FS * 8
@@ -727,7 +727,7 @@ def test_library_samples_are_tuned_aligned_and_in_phase(tmp_path):
 
     import soundfile as sf
 
-    from rehearsal_master import augment, config
+    from mooz import augment, config
 
     t = np.arange(int(0.4 * FS)) / FS
     def drum(f):
@@ -757,7 +757,7 @@ def test_library_samples_are_tuned_aligned_and_in_phase(tmp_path):
 # --- space, rider, glue target ------------------------------------------------------------------
 
 def test_sends_sit_at_their_measured_level_and_delay():
-    from rehearsal_master import space
+    from mooz import space
 
     t = np.arange(FS * 6) / FS
     x = (0.2 * np.sin(2 * np.pi * 440 * t) * ((t % 1) < 0.3))[:, None].repeat(2, 1)
@@ -772,7 +772,7 @@ def test_sends_sit_at_their_measured_level_and_delay():
 
 
 def test_grit_adds_distortion_in_its_band_only():
-    from rehearsal_master import space
+    from mooz import space
 
     t = np.arange(FS * 3) / FS
     x = (0.3 * np.sin(2 * np.pi * 55 * t))[:, None].repeat(2, 1)
@@ -784,7 +784,7 @@ def test_grit_adds_distortion_in_its_band_only():
 
 
 def test_vocal_rider_lifts_the_voice_where_the_band_gets_dense():
-    from rehearsal_master import config, pipeline
+    from mooz import config, pipeline
 
     cfg = config.load(None)["rider"]
     t = np.arange(FS * 12) / FS
@@ -799,7 +799,7 @@ def test_vocal_rider_lifts_the_voice_where_the_band_gets_dense():
 
 
 def test_glue_target_finds_its_threshold():
-    from rehearsal_master import config, dynamics
+    from mooz import config, dynamics
 
     g = config.load(None)["glue"]
     t = np.arange(FS * 10) / FS
@@ -816,7 +816,7 @@ def test_glue_target_finds_its_threshold():
 
 
 def test_chorus_send_is_wide_and_detuned_only_slightly():
-    from rehearsal_master import space
+    from mooz import space
 
     t = np.arange(FS * 4) / FS
     x = (0.2 * np.sin(2 * np.pi * 440 * t))[:, None].repeat(2, 1)
@@ -833,7 +833,7 @@ def test_flattened_samples_level_out_the_hits(tmp_path):
 
     import soundfile as sf
 
-    from rehearsal_master import augment, config
+    from mooz import augment, config
 
     t = np.arange(int(0.4 * FS)) / FS
     drum = lambda f: np.sin(2 * np.pi * f * t) * np.exp(-t / 0.08)  # noqa: E731
@@ -860,7 +860,7 @@ def test_flattened_samples_level_out_the_hits(tmp_path):
 
 
 def test_presets_merge_nested_track_tables():
-    from rehearsal_master import config
+    from mooz import config
 
     c = config.load(None, "modern")["tracks"]["kick"]["augment"]
     assert c["enabled"] and c["library"]["enabled"] and c["library"]["mix"] == 0.55  # changed keys...
@@ -868,7 +868,7 @@ def test_presets_merge_nested_track_tables():
 
 
 def test_delay_send_follows_the_tempo_and_bounces():
-    from rehearsal_master import space
+    from mooz import space
 
     t = np.arange(FS * 4) / FS
     x = np.zeros((len(t), 2))
@@ -885,7 +885,7 @@ def test_delay_send_follows_the_tempo_and_bounces():
 
 
 def test_dual_bass_chain_keeps_the_lows_clean_and_mono():
-    from rehearsal_master import config, space
+    from mooz import config, space
 
     cfg = config.load(None, "interpol")["tracks"]["bass"]["dual"]
     t = np.arange(FS * 4) / FS
@@ -908,7 +908,7 @@ def test_dual_bass_chain_keeps_the_lows_clean_and_mono():
 
 
 def test_ensemble_steps_average_by_weight_and_plans_keep_their_own_cache():
-    from rehearsal_master import config, separate
+    from mooz import config, separate
 
     one = {"model": "a.ckpt", "input": "mix", "outputs": {"vocals": "vocals"}}
     ens = {"input": "mix", "models": [{"model": "a.ckpt", "outputs": {"vocals": "vocals"}},
@@ -938,7 +938,7 @@ def test_ensemble_steps_average_by_weight_and_plans_keep_their_own_cache():
 
 
 def test_max_spec_keeps_the_strongest_estimate_per_bin():
-    from rehearsal_master import separate
+    from mooz import separate
 
     sr = 44100
     t = np.arange(sr * 3) / sr
@@ -956,7 +956,7 @@ def test_cymbal_augment_tells_bells_crashes_and_rides_apart(tmp_path):
 
     import soundfile as sf
 
-    from rehearsal_master import augment, config
+    from mooz import augment, config
 
     rng = np.random.default_rng(3)
     sr = FS
@@ -993,7 +993,7 @@ def test_cymbal_augment_tells_bells_crashes_and_rides_apart(tmp_path):
 def test_a_sample_that_starts_abruptly_starts_at_its_first_frame():
     # The filtered envelope rises before the first frame, so half its peak can come "before" the
     # sample; as a negative index that cut an empty reference and stopped the song.
-    from rehearsal_master import augment
+    from mooz import augment
 
     fs = 48000
     t = np.arange(int(0.3 * fs)) / fs

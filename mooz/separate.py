@@ -30,9 +30,11 @@ import numpy as np
 import soundfile as sf
 from scipy import signal
 
+from . import progress
+
 CHUNK_S = 60.0  # seconds per model call
 OVERLAP_S = 5.0  # crossfaded between consecutive chunks
-MODEL_DIR = Path.home() / ".cache" / "rehearsal-master" / "models"
+MODEL_DIR = Path.home() / ".cache" / "mooz" / "models"
 
 
 def available(backend: str = "demucs") -> bool:
@@ -141,8 +143,10 @@ def separate(x: np.ndarray, fs: int, cfg: dict, cache_dir: Path, key: dict) -> d
         stems = _stems_in(cache_dir)
         if stems and all(sf.info(f).frames == len(x) for f in stems.values()):
             print("  stems: using cache", file=sys.stderr)
+            progress.emit("separation", track=cache_dir.name, state="cached")
             return stems
     print(f"  stems: separating ({cfg['backend']}: {describe(cfg)}) ...", file=sys.stderr)
+    progress.emit("separation", track=cache_dir.name, state="start")
     cache_dir.mkdir(parents=True, exist_ok=True)
     meta.unlink(missing_ok=True)
     for old in cache_dir.glob("*.wav"):  # a different backend/plan gives different stems
@@ -153,11 +157,12 @@ def separate(x: np.ndarray, fs: int, cfg: dict, cache_dir: Path, key: dict) -> d
     sf.write(inp, x.astype(np.float32), fs, subtype="FLOAT")
     job.write_text(json.dumps({"input": str(inp), "out_dir": str(cache_dir), "cfg": cfg}))
     try:
-        subprocess.run([sys.executable, "-m", "rehearsal_master.separate", str(job)], check=True)
+        subprocess.run([sys.executable, "-m", "mooz.separate", str(job)], check=True)
     finally:
         inp.unlink(missing_ok=True)
         job.unlink(missing_ok=True)
     meta.write_text(json.dumps(key))
+    progress.emit("separation", track=cache_dir.name, state="done")
     return _stems_in(cache_dir)
 
 
@@ -205,6 +210,7 @@ def _worker_demucs(inp: Path, out_dir: Path, cfg: dict) -> None:
         tail = None if last else out[:, keep:].copy()
         pos = end if last else end - ov
         print(f"  stems: {min(end, len(x)) / sr:5.0f}s / {len(x) / sr:.0f}s", file=sys.stderr, flush=True)
+        progress.emit("separation", track=out_dir.name, state="step", i=min(end, len(x)), n=len(x), model=cfg["model"])
     for f in tmp.values():
         f.close()
     del x, model
@@ -455,6 +461,8 @@ def _worker_roformer(inp: Path, out_dir: Path, cfg: dict) -> None:
                     normalization_threshold=1.0, amplification_threshold=0.0)
     keep = cfg.get("keep_models", True)
     kept: list[dict] = []
+    n_models = sum(len(members(step)) for step in model_steps(cfg) if "combine" not in step)  # for the progress events
+    n_run = 0
     for i, step in enumerate(model_steps(cfg)):  # (split steps run later, on the cached stems)
         if "combine" in step:  # merge stems the earlier steps made, e.g. several models' bass
             have = [n for n in step["inputs"] if n in current]
@@ -489,6 +497,8 @@ def _worker_roformer(inp: Path, out_dir: Path, cfg: dict) -> None:
         ms = members(step)
         for j, m in enumerate(ms):
             print(f"  stems: step {i + 1}: {m['model']} on {src}", file=sys.stderr, flush=True)
+            progress.emit("separation", track=out_dir.name, state="step", i=n_run, n=n_models, model=_short(m["model"]))
+            n_run += 1
             # segment_size (STFT frames): shorter model windows than its config's, for models too big
             # for the GPU at their own (e.g. 53 stems at 20 s); the separator is told at load time
             # pitch_shift (semitones): the input is shifted down by this much before the model and the

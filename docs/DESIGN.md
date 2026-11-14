@@ -1,12 +1,12 @@
-# rehearsal-master: design
+# Mooz: design
 
 How the pipeline turns a stereo rehearsal recording (one recorder in the room) into a
 balanced, mastered track, and why it is built the way it is. For using it, see the
 [README](../README.md); every setting is documented in
-[defaults.toml](../rehearsal_master/defaults.toml).
+[defaults.toml](../mooz/defaults.toml).
 
-This describes the pipeline as it runs today. The planned simplification (fewer stages, the
-original recording blended in, quieter samples) is in [PLAN.md](PLAN.md).
+This describes the pipeline as it runs today. Where it stands against its targets and what is
+planned next is in [PLAN.md](PLAN.md); the web app over it is in [GUI.md](GUI.md).
 
 ## 1. Principles
 
@@ -76,7 +76,7 @@ listening stages.
   and is cached per song with a key of file, filters and the model steps (not the pan split,
   which runs on the cached stems).
 
-### Stage 0: characterisation ([character.py](../rehearsal_master/character.py))
+### Stage 0: characterisation ([character.py](../mooz/character.py))
 
 | metric | from | meaning |
 |---|---|---|
@@ -98,7 +98,7 @@ chain for every song, so the songs sound alike; the style is still measured and 
 flattening the rise. Overrides change amounts, not on/off switches, so a preset that
 disables a stage keeps it disabled.
 
-**Stem profiles** ([profile.py](../rehearsal_master/profile.py)). Before any clean-up, every
+**Stem profiles** ([profile.py](../mooz/profile.py)). Before any clean-up, every
 raw stem is measured on the whole cached stem, in 85 ms frames, only while the band plays
 (the stems' sum within 25 dB of its loud level, so talk between songs does not count):
 
@@ -116,7 +116,7 @@ instrument is the median over all songs with cached stems, so the corrections pu
 towards how that instrument usually sounds in this band. The profiles are written to
 `character.json` and the report JSON.
 
-### Close tracks ([takes.py](../rehearsal_master/takes.py), [multitrack.py](../rehearsal_master/multitrack.py))
+### Close tracks ([takes.py](../mooz/takes.py), [multitrack.py](../mooz/multitrack.py))
 
 A take may hold more than the room. On a Zoom with inputs: `TrMic`, the built-in stereo mic;
 `Tr<n>`, each input; and `TrLR`, the recorder's own mix-down, measured as exactly 1.413 `TrMic` +
@@ -132,7 +132,7 @@ flowchart LR
     G -- no --> X["bleed: left out"]
     G -- yes --> AL["delay and polarity to the<br/>same instrument's room stem"]
     R --> AL
-    AL --> M["merged stem:<br/>room + close at close_share"]
+    AL --> M["merged stem:<br/>close + a little room (close_share),<br/>at level_lu over the room's"]
     R -- "the other stems" --> M2["room's stem, as it is"]
     M & M2 --> CH["profiles · chains · balance"]
     MIC --> ORIG["the original under the mix"]
@@ -150,23 +150,36 @@ flowchart LR
   the other way up. Phase-only cross-correlation of the two stems over the whole take gives the
   delay and polarity, in the band where the instrument is (`align_band_hz`), and the windows where
   the stem plays say how steady that is. Over the 8 takes the voice is 9.6 to 11.5 ms later and
-  always inverted, the bass 11 ms later, 16 ms on one take, and never inverted. In every band from
+  always inverted, the bass 11 ms later, 16 ms on one take, and never inverted. In every octave from
   50 Hz to 6.4 kHz the lined-up sum stays within ±2.2 dB of the two parts' summed powers. The steady
   share can be low (the bass 0 % and 25 % on the two Stanza takes, the voice 58 % on one Biancaneve)
   because a window finds a reflection rather than the direct sound. That is not a wrong delay: on the
   take with 16 ms, 16 ms adds up and the usual 11 ms would lose 1.8 dB at 50–100 Hz
   (`experiments/multitrack/delay_candidates.py`). Without the polarity flip the voice would lose up
   to 1.8 dB. No clear peak (`min_peak`): no shift, since an unrelated signal has nothing to cancel.
+- **The lowest notes**: one delay lines the two up where the instrument's body is. At the bottom
+  the phase between them runs on (the bass, lined up: 137–158° apart at 63 Hz on three takes, about
+  20 ms' worth between 50 and 80 Hz, what a mixer's low cut and the room do), and in third octaves
+  the two parts took 4–6 dB from each other at 63 Hz. So below `phase_below_hz` (the bass: 250 Hz;
+  the others: off) the lined-up close stem's phase is turned to the room's, band by band, from the
+  cross-spectrum of the two over the take, an all-pass that leaves its level alone
+  (`phase_to_room`). It is followed where the two are clearly the same sound (coherence over 0.6)
+  and not where they are not (under 0.3). The room is the reference: the other stems and the
+  original under the mix are in its phase, and with the bass turned to it the original adds to the
+  bass at 63 Hz where it took from it ([PLAN.md](PLAN.md), "The bass's lowest notes in the merge").
 - **One stem**: the close stem is set against the room's by loudness, `close_share` of the two
-  parts, and added to it before the chain: one chain and one fader per instrument, and everything after
-  it works as on any stem. The vocal's room is turned down first, as ever. The merged stems have a cache of their
+  parts (0.9: the close stem prevails, the room's is 9.5 LU under it), and added to it before the chain:
+  one chain and one fader per instrument, and everything after it works as on any stem. The sum is
+  brought to `level_lu` (6 LU) over the room's own stem, so the share changes what the stem is made of
+  and not how loud it reaches the balance. The share is a setting, not a measurement: no figure tried
+  told the cleaner of the two stems from the other ([PLAN.md](PLAN.md), "The close stem prevails"). The vocal's room is turned down first, as ever. The merged stems have a cache of their
   own, one folder per set of merge settings, so that tone targets are medians of stems like this one.
 - **The original** under the mix remains the room alone, and the balance's estimate of the
   original's share of a group uses the room's stems, not the merged ones.
 - **Order**: all the takes are separated and merged before the first is processed, so each one's tone
   targets are the same whatever the order.
 
-### Stage 1: raw stems ([separate.py](../rehearsal_master/separate.py))
+### Stage 1: raw stems ([separate.py](../mooz/separate.py))
 
 The *roformer* backend runs one of two **plans** (`stems.plan`), chains of models run
 through audio-separator. Each step maps model outputs to stem names (several outputs of a
@@ -267,7 +280,7 @@ split point make two stems that sum back to the input exactly. One cluster only:
 a fuller, less divided band sound. It runs on the cached guitar stem, so switching it needs
 no new separation; both halves share the guitar's profile and tone match.
 
-### Stage 3: drum clean-up ([cleanup.py](../rehearsal_master/cleanup.py), [effects.py](../rehearsal_master/effects.py))
+### Stage 3: drum clean-up ([cleanup.py](../mooz/cleanup.py), [effects.py](../mooz/effects.py))
 
 - **Hit triggers** (0..1 per sample) for kick, snare and toms from their stems, each in the
   band where only that drum lives (the snare on its body, 150–400 Hz, so its own wire buzz is
@@ -297,7 +310,7 @@ no new separation; both halves share the guitar's profile and tone match.
   Measured on Stanza's first 70 s (singer and drums), the hi-hat between its hits is 4 dB
   lower than with one floor (−73 against −69 dB in the buzz band; raw −61), with its hits
   unchanged.
-- **The bed under the hi-hat** ([bed.py](../rehearsal_master/bed.py), `[bed]`, since 9 November
+- **The bed under the hi-hat** ([bed.py](../mooz/bed.py), `[bed]`, since 9 November
   2026). While the band plays, the snare's wires rattle along with the PA and the amps, and the
   drum split files most of that under the hi-hat: on Biancaneve a dark noise (peaking near 3 kHz,
   15 dB down by 12 kHz) 15 dB under the hat's hits, in every gap between them, 8.6 dB louder while
@@ -357,7 +370,7 @@ flowchart LR
 
 Stage files: `3_drum_cleanup/<stem>` and `<stem>_removed` (what was taken out).
 
-### Stage 2: studio stems ([effects.py](../rehearsal_master/effects.py))
+### Stage 2: studio stems ([effects.py](../mooz/effects.py))
 
 Each stem runs its `[tracks.<stem>]` chain, aimed at what a close-miked studio track of that
 instrument would sound like: *tone* (tone match, linear-phase EQ from the mixing literature,
@@ -368,7 +381,7 @@ psychoacoustic bass enhancer). No level or placement decisions are made here. Tr
 (`based_on`), e.g. both guitars share one chain.
 
 Three steps reinforce what the separation and the room took away
-([augment.py](../rehearsal_master/augment.py)), as an engineer does with weak tracks:
+([augment.py](../mooz/augment.py)), as an engineer does with weak tracks:
 
 - **Drum samples** (kick, snare, toms; first in the chain, so the EQ shapes stem and samples
   alike). Samples are made from the drummer's cleanest hits in the song: no other drum
@@ -388,7 +401,7 @@ Three steps reinforce what the separation and the room took away
   They are raw close-mic one-shots from the Cambridge-MT multitracks: clean hits of 12 kick,
   12 snare and 12 tom tracks, aligned and averaged in a loud and a soft layer, built once by
   [tools/build_drum_samples.py](../tools/build_drum_samples.py) into
-  `~/.cache/rehearsal-master/drum_samples/` (not in the repository: those tracks may be used,
+  `~/.cache/mooz/drum_samples/` (not in the repository: those tracks may be used,
   not redistributed). For each drum (each tom), the one nearest its pitch is chosen and
   tuned to it (±25 % at most). Every hit then gets the loud or soft layer by velocity:
   - placed start on start (the same half-peak rule as the hit detection), then refined
@@ -490,7 +503,7 @@ Two steps use the stem's profile, so the same chain gives the same result on eve
   added to the static EQ in the same linear-phase filter. With `reference` > 0 the target is
   blended with the median tone of raw, unprocessed studio tracks of that instrument: close
   mics, DI and amp tracks, lead vocals, 20 per instrument from the Cambridge-MT multitracks,
-  in [references/raw_multitracks.json](../rehearsal_master/references/raw_multitracks.json),
+  in [references/raw_multitracks.json](../mooz/references/raw_multitracks.json),
   built by [tools/build_raw_references.py](../tools/build_raw_references.py). This pulls
   the stems from "the band's usual" towards "a studio track". Then the static EQ gives every
   song the same character: the tone match evens out the takes (a picked bass is brighter, a
@@ -499,25 +512,25 @@ Two steps use the stem's profile, so the same chain gives the same result on eve
   6 dB that the stem's punch falls short of the instrument's median (0.5–2×): a
   room-smeared take gets more attack, an already sharp one less.
 
-### Stage 4: drum bus ([pipeline.py](../rehearsal_master/pipeline.py) `_drum_bus`)
+### Stage 4: drum bus ([pipeline.py](../mooz/pipeline.py) `_drum_bus`)
 
 The kit pieces are balanced against kit targets (kick, snare, toms, cymbals; the same
 pattern method as the mix balance, below), summed, and given the bus chain:
 - optional EQ;
 - a **shared room** for the shells: snare and toms through a synthetic 0.7 s room
-  ([space.py](../rehearsal_master/space.py)), at −16 LU re the kit. The clean-up took
+  ([space.py](../mooz/space.py)), at −16 LU re the kit. The clean-up took
   their own room away, and this gives them back weight, sustain and one space together;
 - glue compressor;
 - parallel ("New York") compression, whose blend the styles raise, optionally driven into
   saturation (the `indie` preset's trashy crushed room);
 - saturation.
 
-### Stage 5: mix and master ([pipeline.py](../rehearsal_master/pipeline.py))
+### Stage 5: mix and master ([pipeline.py](../mooz/pipeline.py))
 
 - **Mix track**: mix ducks (bass and guitars dip their low end and click band on kicks; the
   guitars dip 1.5–4 kHz by 2 dB while the singer's words are there: cross-adaptive
   unmasking, after Hafezi & Reiss), re-centring, width (power-preserving), constant-power
-  pan, gain, then the track's **sends** ([space.py](../rehearsal_master/space.py)): plate
+  pan, gain, then the track's **sends** ([space.py](../mooz/space.py)): plate
   or room (synthetic decorrelated noise IRs with frequency-dependent decay), slapback, tape
   echo (repeats darker, saturated and wobbling). Each sits at `level_lu` *measured* against
   the dry track, so a song's space doesn't depend on its level. The vocals get a 1.1 s plate
@@ -593,7 +606,7 @@ flowchart LR
     MEAS -- yes --> FADE["fades"] --> EXP["24-bit WAV (TPDF) · MP3 · A/B"]
 ```
 
-**Tape** ([plugins.py](../rehearsal_master/plugins.py)): CHOW Tape Model, a physical model of
+**Tape** ([plugins.py](../mooz/plugins.py)): CHOW Tape Model, a physical model of
 a reel-to-reel machine (hysteresis, head loss and bump) by Chowdhury DSP, as a VST3 hosted
 headless by Spotify's pedalboard (`engine = "chowtape"`, also available for the drum bus and
 any track; `"builtin"` is the tanh saturator, used when the plugin is not installed).
@@ -646,8 +659,10 @@ hot at normal bias (head bump, softer top). Comparison excerpts are in
 
 ## 5. Configuration
 
-Layers, each overriding the previous: [defaults.toml](../rehearsal_master/defaults.toml) →
-`rehearsal.toml` (the folder's settings) → `--preset` ([presets/](../rehearsal_master/presets/))
+Layers, each overriding the previous: [defaults.toml](../mooz/defaults.toml) →
+`rehearsal.toml` (the folder's settings) → `--preset` (`presets/<name>.toml` next to that
+`rehearsal.toml` if there is one, else the built-in [presets/](../mooz/presets/);
+given several times, every take runs once per preset)
 → the song's style (`[character.styles.*]`, only with `character.adapt`) → per-song
 `[files."<part of name>"]` → the command line. Keys are
 validated (a typo is an error), tables merge, lists replace. Track chains start from
@@ -715,6 +730,8 @@ processed/<preset dir>/
                                     (with close tracks also 1_raw_Tr<n> and 1_merged, links)
                                     (FLAC, all −12 dB so nothing clips)
 processed/<preset dir>/.work/<song>/  this run's intermediate files, removed when it ends
+processed/chains/<song>/<stem>/<key>/  each stem after its chain, kept from run to run and shared by the
+                                    presets (chaincache.py): proc.wav, meta.json, data.npz, the stem's stage files
 processed/stems/<song>/             separation cache (whole recording, float WAV), _profile.json,
                                     _split_*.wav (pan split, when on)
 processed/stems/_buzz/              buzz library (one file per song)
@@ -728,8 +745,11 @@ processed/stems_ensemble_merged/<settings>/<take>/  the stems with the close tra
 | module | responsibility |
 |---|---|
 | `cli.py` | arguments, file collection, memory-capped scope, summaries, `--learn-balance` |
+| `progress.py` | where a run is: one JSON event per line for a front end, only with `REHEARSAL_PROGRESS` set; the stages' shares of a take's time |
+| `gui/` | the web app ([GUI.md](GUI.md)): a local server over the command line, the list of projects, the settings and profile forms, the job and its progress, a take's files along the pipeline for listening (`gui/stagemap.py`), two profiles' masters compared blind and the verdicts (`gui/listening.py`) |
 | `config.py` | layered, validated settings; track inheritance |
 | `pipeline.py` | the stage order; drum bus; the original blend and the balance in it; master loop |
+| `chaincache.py` | each stem's chain kept under a key of everything it reads: a mix or master change does not run the stem chains again |
 | `character.py` | stage 0 metrics and style |
 | `profile.py` | stage 0 stem profiles, cross-song targets, tone match |
 | `takes.py` | what was recorded: which files make a take, its room and close tracks, the recorder's mix-down |
@@ -755,9 +775,17 @@ model's kept outputs); stem profiles about 15 s the first time (cached); process
 4 min; peak memory about 3 GB. Stage files take about
 0.5 GB per song (FLAC).
 
+A second run of a take does not run the stem chains again unless what they read has changed
+([chaincache.py](../mooz/chaincache.py)): each stem's processed result is kept under
+a key of the code, the stem's file, the trim, its chain settings, its profile and target. A
+change to the bus, the balance or the master then takes a third of the time (Miramare, 11
+November 2026: 336 s with nothing kept, 112 s with all nine chains kept, the same file byte for
+byte), a change to one stem's chain that plus the one chain. The kept chains take about 1.3 GB
+per song, shared by all presets; `[chains] enabled = false` or `--no-chain-cache` turns them off.
+
 ## 9. Tests
 
-`uv run pytest` (80 checks): K-weighting and loudness of a reference sine, compressor
+`uv run pytest` (103 checks): K-weighting and loudness of a reference sine, compressor
 release, exact band reconstruction, limiter ceiling, mono bass, FIR accuracy, every effect on
 synthetic signals (de-esser, resonances, transients, bass enhancer, saturator, gates, ducks),
 pan split (and that it runs outside the separation cache), chunked separation, hum, expander
@@ -773,13 +801,22 @@ delay, dual bass chain (exact when off, mono lows, driven and wider highs). Two 
 `test_pipeline.py` runs the whole chain on a 12 s synthetic song with fixture stems in place of
 the models (default and albini: finite audio, loudness target, true-peak ceiling, reports and
 stage files, and the null test: every processor off, the master is the recording to within
-−60 dB); `test_config.py` the layers' precedence and track inheritance;
-`test_multitrack.py` what makes a take, delay and polarity, what counts as bleed, a whole take
-with a close track, and that the `5_premix` parts add up to the mix;
+−60 dB; kept stem chains: a second run makes none again and writes the same master byte for
+byte, a bus setting changes no chain, a stem's own setting changes that one, and a run without
+kept chains gives the same file); `test_config.py` the layers' precedence and track inheritance;
+`test_multitrack.py` what makes a take, delay and polarity, a close stem's lows turned to the
+room's phase at their own level, what counts as bleed, a whole take with a close track, and that
+the `5_premix` parts add up to the mix;
 `test_separation_glue.py` the audio-separator internals that `separate.py` patches, which is
 why that library is pinned.
 `test_bed.py` the bed goes and the hat's hits stay, an open hat's own decay is not a bed, the snare's
 burst is keyed on the snare stem.
+`test_gui.py` the web app over HTTP on a temporary folder (a project from a folder, the settings form
+keeping the file's comments, nothing saved that does not load, a project's own profile, a built-in one
+edited as the project's version, a take's files laid out along the pipeline, a job followed through its
+events and cancelled, files served only from inside the project, other sites refused, a blind
+comparison's verdicts kept, counted and no longer counted once a master is made again), and a
+real run with two presets whose progress events are checked.
 
 ## 10. Other tools considered
 
@@ -849,9 +886,12 @@ Literature on improving stems and remixing them, compared with these strategies:
   but stems are not studio isolation.
 - The two guitars can only be split when their amps stood apart; when they overlap in time
   and frequency, each moment goes to the dominant position.
-- No reference recordings are used: "studio-like" stems come from measured corrections and
-  common mixing practice, not from matching real studio tracks. The tone-match targets are
-  the band's own median: they make songs consistent, not better; the EQ does that.
+- No reference mix is used: "studio-like" stems come from measured corrections and common
+  mixing practice. The tone match aims at the band's own median (which makes songs consistent,
+  not better), blended per instrument with raw studio tracks of it (`tone_match.reference`);
+  the mix as a whole is matched to no record.
+- Results depend on what was processed before: tone targets, the buzz fingerprint and the
+  mix-tone library are medians over the songs seen so far (PLAN, step 6).
 - Targets need at least 3 songs with that stem; a new song joins them on its first run.
 - The style rules are heuristics tuned on five songs; `character.json` shows the numbers
   behind each choice so the thresholds can be adjusted.

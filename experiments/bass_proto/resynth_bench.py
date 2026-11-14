@@ -9,7 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent)); sys.path.insert(0, str
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 import evaluate as ev
 from bass_tricks import max_spec
-from rehearsal_master import augment, config, dynamics
+from mooz import augment, config, dynamics
 FS = 48000
 cfg = config.load(None)["tracks"]["bass"]
 hp = ev.config.load(ev.ROOT / "rehearsal.toml")["highpass"]; sos = signal.butter(hp["order"], hp["freq_hz"], "high", fs=FS, output="sos")

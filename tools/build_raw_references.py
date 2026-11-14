@@ -1,4 +1,4 @@
-"""Build rehearsal_master/references/raw_multitracks.json: the average tone of raw,
+"""Build mooz/references/raw_multitracks.json: the average tone of raw,
 unprocessed studio tracks per instrument, the target of the tone match's "reference" part.
 
 Source: RawStems (https://huggingface.co/datasets/yongyizang/RawStems), the raw multitracks
@@ -25,11 +25,11 @@ import numpy as np
 import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from rehearsal_master import eq  # noqa: E402
-from rehearsal_master.profile import NFFT, _frames  # noqa: E402
+from mooz import eq  # noqa: E402
+from mooz.profile import NFFT, _frames  # noqa: E402
 
 URL = "https://huggingface.co/datasets/yongyizang/RawStems/resolve/main/RawStems_{}.zip"
-OUT = Path(__file__).resolve().parents[1] / "rehearsal_master" / "references" / "raw_multitracks.json"
+OUT = Path(__file__).resolve().parents[1] / "mooz" / "references" / "raw_multitracks.json"
 FS = 48000
 FETCH = 8 << 20  # compressed bytes per track (~45-60 s of 24-bit mono FLAC)
 # instrument -> (group folder, file-name pattern, exclude pattern)

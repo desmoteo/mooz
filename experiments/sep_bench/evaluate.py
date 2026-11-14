@@ -1,6 +1,6 @@
 """Score separation models and ensembles on the benchmark (experiments/sep_bench/build.py).
 
-Every model runs through the pipeline's own separation code (rehearsal_master.separate: the
+Every model runs through the pipeline's own separation code (mooz.separate: the
 same chunking, scaling and model calls), on the signal the pipeline separates (the mix after
 its rumble filter; the references get the same filter). Per song three runs, cached in
 processed/experiments/sep_bench/stems/<run>/<song>/ (each model's outputs in models/):
@@ -36,7 +36,7 @@ from scipy import optimize, signal
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
-from rehearsal_master import config, separate  # noqa: E402
+from mooz import config, separate  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from candidates import custom_models  # noqa: E402

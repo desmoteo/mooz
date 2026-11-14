@@ -8,7 +8,7 @@ import pytest
 import soundfile as sf
 
 import test_pipeline as tp
-from rehearsal_master import config, loudness, multitrack, pipeline, separate, takes
+from mooz import config, loudness, multitrack, pipeline, separate, takes
 
 FS = tp.FS
 DELAY = {"vocals": 480, "bass": 528}  # how much later the room hears them: 10 and 11 ms
@@ -153,6 +153,15 @@ def test_close_tracks_are_lined_up_used_or_left_out_and_reach_the_master(tmp_pat
     room_v = sf.read(merged_dir / "_room_vocals.wav", dtype="float64", always_2d=True)[0]
     merged_v = sf.read(merged_dir / "vocals.wav", dtype="float64", always_2d=True)[0]
     assert np.sum((merged_v - room_v) * room_v) > 0
+    # the close stem prevails, with a little of the room: the parts at close_share of their loudness, the whole
+    # at level_lu over the room's own stem, whatever the share
+    m = mt["merged"]["vocals"]
+    k = 10 ** (m["room_gain_db"] / 20)
+    close_part = merged_v - k * room_v
+    share = cfg["multitrack"]["close_share"]["vocals"]
+    assert share == 0.9 and m["close_share"] == share
+    assert loudness.integrated(close_part, tp.FS) - loudness.integrated(k * room_v, tp.FS) == pytest.approx(10 * np.log10(share / (1 - share)), abs=0.2)
+    assert loudness.integrated(merged_v, tp.FS) - loudness.integrated(room_v, tp.FS) == pytest.approx(cfg["multitrack"]["level_lu"], abs=0.1)
     # stems not merged are the room's own
     assert (merged_dir / "guitar.wav").is_symlink() and (merged_dir / "kick.wav").is_symlink()
     # the room's cache is untouched: the merge has a cache of its own
@@ -226,3 +235,33 @@ def test_the_simple_bass_preset_changes_only_the_bass_chain():
             assert simple["tracks"][name] == full["tracks"][name], name
     assert {k: v for k, v in simple.items() if k not in ("tracks", "output", "_layers", "_cli")} == \
            {k: v for k, v in full.items() if k not in ("tracks", "output", "_layers", "_cli")}
+
+
+def test_a_close_stems_lows_are_turned_to_the_rooms_phase_and_keep_their_level():
+    """A mixer's low cut turns the phase of the lowest notes: lined up in the body, the two parts
+    cancel at the bottom. phase_to_room: they add there, and the close stem's spectrum is as it was."""
+    from scipy import signal
+
+    t1 = np.arange(2 * FS) / FS
+    notes = [55.0, 61.7, 73.4, 82.4, 98.0, 110.0]
+    room = np.concatenate([sum(np.sin(2 * np.pi * f * k * t1) / k for k in range(1, 7)) * np.exp(-t1 / 1.5) for f in notes * 2]) * 0.1
+    close = signal.sosfilt(signal.butter(3, 110.0, "high", fs=FS, output="sos"), room)  # the same bass after a low cut
+
+    def at(x, f):  # level at one of the notes' fundamentals (dB)
+        fr, p = signal.welch(x, FS, nperseg=1 << 15)
+        return 10 * np.log10(p[(fr > f - 3) & (fr < f + 3)].sum())
+
+    turned, found = multitrack.phase_to_room(room, close, FS, 250.0)
+    assert abs(found["phase_deg_and_coherence"]["63"][0]) > 100 and found["phase_deg_and_coherence"]["63"][1] > 0.9
+    for f in notes[:4]:
+        in_phase = 20 * np.log10(10 ** (at(room, f) / 20) + 10 ** (at(close, f) / 20))
+        assert at(room + turned, f) > in_phase - 0.5, f  # they add
+        assert abs(at(turned, f) - at(close, f)) < 0.3, f  # at the level the close stem had
+    assert at(room + close, 61.7) < at(room + turned, 61.7) - 2.0  # as they came, the two took from each other
+    k = slice(FS, -FS)
+    high = signal.sosfiltfilt(signal.butter(4, 500.0, "high", fs=FS, output="sos"), np.column_stack([close, turned]), axis=0)[k]
+    assert np.max(np.abs(high[:, 0] - high[:, 1])) < 1e-3 * np.max(np.abs(high[:, 0]))  # above the turn: sample for sample
+    # nothing in common: nothing is turned
+    noise = np.random.default_rng(3).normal(0, 0.1, len(room))
+    same, _ = multitrack.phase_to_room(room, noise, FS, 250.0)
+    assert np.max(np.abs(same[k] - noise[k])) < 0.02 * np.max(np.abs(noise))

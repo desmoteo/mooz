@@ -22,8 +22,19 @@ PRESETS_DIR = Path(__file__).with_name("presets")
 _PRIVATE = ("_layers", "_cli", "files")  # kept in the resolved settings for for_file(); not settings
 
 
-def presets() -> list[str]:
-    return sorted(p.stem for p in PRESETS_DIR.glob("*.toml"))
+def presets(path: Path | None = None) -> list[str]:
+    """The presets by name: the built-in ones, and with a settings file's path the project's own
+    (presets/<name>.toml next to it; one named like a built-in preset takes its place)."""
+    dirs = [PRESETS_DIR] + ([path.parent / "presets"] if path is not None else [])
+    return sorted({p.stem for d in dirs for p in d.glob("*.toml")})
+
+
+def preset_file(name: str, path: Path | None = None) -> Path:
+    """Where preset name is: next to the settings file first, then among the built-in ones."""
+    for d in ([path.parent / "presets"] if path is not None else []) + [PRESETS_DIR]:
+        if (d / f"{name}.toml").exists():
+            return d / f"{name}.toml"
+    raise KeyError(f"unknown preset '{name}' (available: {', '.join(presets(path)) or 'none'})")
 
 
 def _merge(base: dict, over: dict, path: str = "") -> dict:
@@ -85,8 +96,8 @@ def _layer_name(name: str, path: str) -> str:
 
 
 def load(path: Path | None, preset: str | None = None, overrides: dict | None = None) -> dict:
-    """defaults.toml, then the user's file, then a preset (presets/<name>.toml), then the
-    command line's overrides. The per-song [files] sections are validated here and applied,
+    """defaults.toml, then the user's file, then a preset (presets/<name>.toml next to that
+    file, else the built-in one of that name), then the command line's overrides. The per-song [files] sections are validated here and applied,
     together with the song's style, by for_file()."""
     layers: list[tuple[str, dict]] = []
     files: dict = {}
@@ -96,10 +107,7 @@ def load(path: Path | None, preset: str | None = None, overrides: dict | None = 
         files = user.pop("files", {})
         layers.append((str(path), user))
     if preset:
-        pf = PRESETS_DIR / f"{preset}.toml"
-        if not pf.exists():
-            raise KeyError(f"unknown preset '{preset}' (available: {', '.join(presets()) or 'none'})")
-        with open(pf, "rb") as f:
+        with open(preset_file(preset, path), "rb") as f:
             layers.append((f"preset {preset}", tomllib.load(f)))
     cli = overrides or {}
     cfg = _resolve(layers + [("command line", cli)])
@@ -107,6 +115,12 @@ def load(path: Path | None, preset: str | None = None, overrides: dict | None = 
         _resolve(layers + [(f'files."{key}"', over)])
     cfg["_layers"], cfg["_cli"], cfg["files"] = layers, cli, files
     return cfg
+
+
+def with_layer(cfg: dict, name: str, layer: dict) -> dict:
+    """The loaded settings with one more layer on top, validated like the others: how a preset
+    that is not a file yet (the web app's profile editor) is checked."""
+    return _resolve(cfg["_layers"] + [(name, layer)])
 
 
 def for_file(cfg: dict, filename: str, style: str | None = None) -> dict:

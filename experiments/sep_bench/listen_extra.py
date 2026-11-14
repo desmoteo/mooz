@@ -22,7 +22,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from candidates import custom_models  # noqa: E402
 
-from rehearsal_master import config, separate  # noqa: E402
+from mooz import config, separate  # noqa: E402
 
 INPUTS = ROOT / "experiments" / "prompt_sep" / "inputs"
 OUT = ROOT / "processed" / "experiments" / "new_models"

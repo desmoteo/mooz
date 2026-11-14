@@ -8,13 +8,14 @@ must exist), not golden values: they hold whatever the settings are tuned to.
 """
 
 import json
+import os
 
 import numpy as np
 import pytest
 import soundfile as sf
 from scipy import signal
 
-from rehearsal_master import config, loudness, pipeline, separate
+from mooz import config, loudness, pipeline, separate
 
 FS = 48000
 LEAD_S, MUSIC_S, TAIL_S = 5.0, 12.0, 1.5  # silence with hum, the song, silence
@@ -96,6 +97,8 @@ def _fixture_separation(monkeypatch, mix, stems, highpass: dict | None = None):
     settings) the stems get the same filter and still add up to what is separated."""
     def fixture_stems(x, fs, cfg, cache_dir, key):
         assert len(x) == len(mix) and fs == FS  # the whole recording goes to the separation
+        if (cache_dir / "key.json").exists() and json.loads((cache_dir / "key.json").read_text()) == key:
+            return separate._stems_in(cache_dir)  # as the real one: separated once, then found
         cache_dir.mkdir(parents=True, exist_ok=True)
         for name, s in stems.items():
             if highpass and highpass["enabled"]:
@@ -219,3 +222,90 @@ def test_with_every_processor_off_the_master_is_the_recording(tmp_path, monkeypa
     err = 10 * np.log10(np.sum((x - gain * y) ** 2) / np.sum(x ** 2))
     assert err < -60, f"master differs from the recording by {err:.1f} dB"
     assert rep["finalize"]["limiter"]["max_gr_db"] == 0.0 and rep["tracks"]["blend"]["gain_db"] is not None
+
+
+def _run(path, tmp_path, over: dict) -> tuple[dict, bytes, dict]:
+    """One run: (report, the master's bytes, the settings)."""
+    cfg = config.for_file(config.load(None, None, config._deep(_hermetic(tmp_path), over)), path.name)
+    rep = pipeline.process_file(path, cfg)
+    return rep, open(rep["outputs"]["wav"], "rb").read(), cfg
+
+
+def _same_but_chains(a: dict, b: dict) -> bool:
+    plain = lambda r: json.dumps({k: v for k, v in r.items() if k != "chains"}, default=float, sort_keys=True)  # noqa: E731
+    return plain(a) == plain(b)
+
+
+def test_kept_stem_chains_give_the_same_master_and_only_a_changed_chain_runs_again(song, tmp_path, monkeypatch):
+    """chaincache.py: a second run takes every stem's chain as the first left it, and the master
+    is the same file; a bus setting changes no chain; a stem's own setting changes that one."""
+    mix, stems = song
+    path = tmp_path / NAME
+    sf.write(path, mix.astype(np.float32), FS, subtype="FLOAT")
+    _fixture_separation(monkeypatch, mix, stems, config.load(None)["highpass"])
+    played = sorted(n for n in stems if n not in ("other", "vocal_room"))  # "other" is silent: no chain to keep
+
+    first, master, cfg = _run(path, tmp_path, {})
+    assert first["chains"] == {"reused": [], "made": first["chains"]["made"]} and sorted(first["chains"]["made"]) == played
+    kept = path.parent / cfg["chains"]["dir"] / path.stem
+    assert sorted(d.name for d in kept.iterdir()) == ["_character"] + played and all(len(list(d.iterdir())) == 1 for d in kept.iterdir())
+
+    ran, looked = [], []
+    studio, characterise = pipeline.effects.studio_track, pipeline.character.characterise
+    monkeypatch.setattr(pipeline.effects, "studio_track", lambda *a, **k: (ran.append(1), studio(*a, **k))[1])
+    monkeypatch.setattr(pipeline.character, "characterise", lambda *a, **k: (looked.append(1), characterise(*a, **k))[1])
+    stage_file = path.parent / cfg["output"]["dir"] / "stages" / path.stem / "2_stems" / "bass.flac"
+    stage_file.unlink()  # a kept chain brings its stage files back
+
+    again, master_again, _ = _run(path, tmp_path, {})
+    assert not ran and not looked and sorted(again["chains"]["reused"]) == played and again["chains"]["made"] == []
+    assert master_again == master and _same_but_chains(again, first)
+    assert stage_file.exists()
+
+    change = {"glue": {"ratio": 3.0}, "tracks": {"bass": {"gain_db": 2.0}}}
+    changed, master_changed, _ = _run(path, tmp_path, change)
+    assert len(ran) == 1 and changed["chains"]["made"] == ["bass"] and len(changed["chains"]["reused"]) == len(played) - 1
+    assert master_changed != master
+    assert len(list((kept / "bass").iterdir())) == 2  # both bass chains stay: the first settings find theirs again
+
+    fresh, master_fresh, _ = _run(path, tmp_path, config._deep(change, {"chains": {"enabled": False}}))
+    assert "chains" not in fresh and len(ran) == 1 + len(played) and len(looked) == 1
+    assert master_fresh == master_changed and _same_but_chains(fresh, changed)  # kept or made: the same master
+
+    back, master_back, _ = _run(path, tmp_path, {})
+    assert back["chains"]["made"] == [] and master_back == master
+
+
+def test_kept_chains_are_thinned_and_a_folder_that_cannot_be_written_costs_only_time(tmp_path, capsys):
+    from mooz import chaincache
+
+    proc = tmp_path / "work" / "_proc_bass.wav"
+    proc.parent.mkdir()
+    sf.write(proc, np.zeros((100, 2), dtype=np.float32), FS, subtype="FLOAT")
+    chains = chaincache.Chains(tmp_path / "chains" / "take", keep=2)
+    keys = []
+    for i in range(4):
+        key, made_of = chains.key({"stem": "bass", "chain": {"gain_db": float(i)}})
+        keys.append(key)
+        chains.store("bass", key, made_of, proc, FS, {"lufs_out": -20.0 - i, "curve": np.arange(3.0)},
+                     {"lufs_out": -20.0 - i, "traces": {"gate": np.ones(4, dtype=np.float32)}}, np.full(100, float(i), dtype=np.float32),
+                     np.full((100, 2), 0.5, dtype=np.float32), {})
+        os.utime(chains.root / "bass" / key / "meta.json", (1000 + i, 1000 + i))  # used one after the other
+    assert sorted(d.name for d in (chains.root / "bass").iterdir()) == sorted(keys[2:])  # the last two used stay
+    assert chains.load("bass", keys[0], proc.parent) is None
+
+    k = chains.load("bass", keys[2], proc.parent)
+    assert k.stats == {"lufs_out": -22.0, "curve": k.stats["curve"]} and list(k.stats["curve"]) == [0.0, 1.0, 2.0]
+    assert k.detail["traces"]["gate"].dtype == np.float32 and k.kit_gr[0] == 2.0 and k.taken.shape == (100, 2)
+
+    meta = chains.root / "bass" / keys[3] / "meta.json"
+    meta.write_text(meta.read_text().replace(chaincache.code(), "0" * 16))  # made by other code: never used again
+    key, made_of = chains.key({"stem": "bass", "chain": {"gain_db": 9.0}})
+    chains.store("bass", key, made_of, proc, FS, {}, {}, None, None, {})
+    assert sorted(d.name for d in (chains.root / "bass").iterdir()) == sorted([keys[2], key])
+
+    blocked = tmp_path / "file"
+    blocked.write_text("")
+    nowhere = chaincache.Chains(blocked / "take")
+    nowhere.store("bass", key, made_of, proc, FS, {}, {}, None, None, {})  # no error: the run goes on
+    assert "could not be kept" in capsys.readouterr().err and nowhere.load("bass", key, proc.parent) is None

@@ -10,7 +10,7 @@
 # clipper, no transient shapers that take the room away, no exciters, gentler tonal EQ, the vocal
 # room sound kept, guitars and bass louder and wider, a lower loudness target so the limiter only
 # catches stray peaks. Written to processed/albini/, so it can be compared with the default sound:
-#   uv run rehearsal-master --preset albini
+#   uv run mooz --preset albini
 
 [output]
 dir = "processed/albini"

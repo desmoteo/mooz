@@ -18,7 +18,7 @@ sys.path.insert(0, str(ROOT / "experiments" / "sep_bench"))
 import evaluate as ev  # noqa: E402
 from bass_tricks import max_spec  # noqa: E402
 
-from rehearsal_master import augment, config, note_eq  # noqa: E402
+from mooz import augment, config, note_eq  # noqa: E402
 
 FS = 48000
 BANDS = [(90, 250), (250, 600), (600, 1500), (1500, 4000)]

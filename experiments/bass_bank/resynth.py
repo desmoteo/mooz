@@ -33,7 +33,7 @@ DEFAULTS = {
     "top_hz": 5000.0, "slope_db": 9.0, "stretch": 5e-5, "decay_per_khz": 4.0, "top_re_studio_db": -3.0,
     "attack_db": 0.0, "fill_db": 0.0,
 }
-STUDIO = Path(__file__).resolve().parents[2] / "rehearsal_master/references/raw_multitracks.json"
+STUDIO = Path(__file__).resolve().parents[2] / "mooz/references/raw_multitracks.json"
 
 
 def _band_level(y: np.ndarray, fs: float, lo: float, hi: float) -> float:

@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np, soundfile as sf
 from scipy import signal
 sys.path.insert(0, ".")
-from rehearsal_master import loudness, separate
+from mooz import loudness, separate
 
 root = Path(sys.argv[1])
 FS = 48000

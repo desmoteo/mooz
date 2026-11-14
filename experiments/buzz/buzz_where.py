@@ -6,7 +6,7 @@ import json, glob, sys, pathlib
 import numpy as np, soundfile as sf
 from scipy import signal
 sys.path.insert(0, ".")
-from rehearsal_master import effects, cleanup, loudness
+from mooz import effects, cleanup, loudness
 FR = 0.01  # frame, s
 LO, HI = 1200.0, 12000.0
 

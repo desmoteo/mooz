@@ -9,7 +9,7 @@ IN="260924_230957_TrLR Stanza OK.WAV"
 for model in BS-Roformer-SW.ckpt htdemucs_ft.yaml hdemucs_mmi.yaml kuielab_a_bass.onnx; do
   echo "== $model $(date +%T)"
   docker run --rm --gpus all --memory=8g --user "$(id -u):$(id -g)" -e HOME=/tmp \
-    -v "$PWD:/workdir" -v "$HOME/.cache/rehearsal-master/models:/models" -w /workdir \
+    -v "$PWD:/workdir" -v "$HOME/.cache/mooz/models:/models" -w /workdir \
     beveradb/audio-separator:gpu \
     -m "$model" --model_file_dir /models --output_dir bass --single_stem Bass \
     --sample_rate 48000 --output_format FLAC "$IN" 2>&1 \
