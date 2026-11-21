@@ -23,14 +23,16 @@ from .projects import DEFAULT, UserError
 LOG_LINES = 2000
 
 
-def command(cfg_path: Path, rooms: list[str], profiles: list[str], ab: bool, separate_only: bool) -> list[str]:
-    """The command line for a job: the takes by one of their files, the profiles as presets."""
+def command(cfg_path: Path, rooms: list[str], profiles: list[str], ab: bool, separate_only: bool,
+            again: bool = False) -> list[str]:
+    """The command line for a job: the takes by one of their files, the profiles as presets.
+    again: also the takes that are already mastered with these very settings (left alone otherwise)."""
     cmd = [sys.executable, "-m", "mooz.cli", *rooms, "-c", str(cfg_path)]
     if separate_only:
         return cmd + ["--separate-only"]
     for p in profiles:
         cmd += ["--preset", p]
-    return cmd + (["--ab"] if ab else [])
+    return cmd + (["--ab"] if ab else []) + (["--again"] if again else [])
 
 
 class Job:
@@ -50,6 +52,7 @@ class Job:
         self.log: collections.deque[str] = collections.deque(maxlen=LOG_LINES)
         self.lines = 0                        # log lines so far, the dropped ones included
         self.saw_end = False
+        self.stopped: dict | None = None      # the run said it was stopped from outside, and why (out of memory)
         self.cancelled = False
         self.proc: subprocess.Popen | None = None
         self.lock = threading.Lock()
@@ -58,7 +61,7 @@ class Job:
     def _unit(take: str, preset: str) -> dict:
         return {"take": take, "profile": preset if preset not in ("", DEFAULT) else DEFAULT, "state": "pending", "frac": 0.0,
                 "stage": "", "key": "", "detail": "", "started": None, "seconds": None, "summary": None, "error": None,
-                "separated": False}
+                "separated": False, "kept": False}
 
     # -- the run's events ------------------------------------------------------------------
 
@@ -83,8 +86,11 @@ class Job:
                                          "detail": e.get("detail", "")}
         elif ev == "unit_done" and e["i"] < len(self.units):
             self.units[e["i"]] |= {"state": "done" if e["ok"] else "failed", "frac": 1.0, "seconds": e.get("seconds"),
-                                   "summary": e.get("summary"), "error": e.get("error"), "stage": "", "key": "", "detail": ""}
+                                   "summary": e.get("summary"), "error": e.get("error"), "stage": "", "key": "", "detail": "",
+                                   "kept": bool(e.get("kept"))}  # kept: already mastered with these settings, not made again
             self.current = None
+        elif ev == "stopped":
+            self.stopped = {"why": e.get("why"), "limit": e.get("limit")}
         elif ev == "end":
             self.saw_end = True
 
@@ -104,10 +110,15 @@ class Job:
             self.ended = time.time()
             self.separation = self.ahead = None
             failed = [u for u in self.units if u["state"] == "failed"]
+            why = None  # stopped from outside: a kill leaves no message of the run's own
+            if self.stopped and self.stopped.get("why") == "memory":
+                why = f"it needed more memory than the {self.stopped.get('limit') or 'limit'} it may use"
+            elif returncode in (-9, 137):
+                why = "it was killed, most likely for lack of memory"
             for u in self.units:
                 if u["state"] == "running":  # the run stopped under it
                     u["state"] = "cancelled" if self.cancelled else "failed"
-                    u["error"] = None if self.cancelled else "the run stopped before this take was finished"
+                    u["error"] = None if self.cancelled else (f"stopped here: {why}" if why else "the run stopped before this take was finished")
             if self.cancelled:
                 self.state, self.message = "cancelled", "Cancelled."
             elif returncode == 0 and self.saw_end:
@@ -115,6 +126,10 @@ class Job:
             elif self.saw_end and failed:
                 self.state = "failed"
                 self.message = f"{len(failed)} of {len(self.units)} failed."
+            elif why:
+                self.state = "failed"
+                self.message = (f"The system stopped the run: {why}. The takes already finished are kept: start it again and "
+                                "only the others are made.")
             else:  # it never got to the end: the last lines say why
                 self.state = "failed"
                 tail = [x.strip() for x in self.log if x.strip()]
@@ -159,8 +174,9 @@ class Runner:
         return self.job is not None and self.job.state == "running"
 
     def start(self, project: dict, takes: list[dict], profiles: list[str], ab: bool = False,
-              separate_only: bool = False) -> Job:
-        """takes: the project's takes to run (name and room file); profiles: by name."""
+              separate_only: bool = False, again: bool = False) -> Job:
+        """takes: the project's takes to run (name and room file); profiles: by name. again: also
+        what is already mastered with these settings."""
         with self.lock:
             if self.running():
                 raise UserError("A job is already running. Wait for it, or cancel it.")
@@ -171,7 +187,7 @@ class Runner:
             cfg_path = Path(project["config"])
             job = Job(project, takes, profiles, separate_only)
             env = os.environ | {"REHEARSAL_PROGRESS": "1", "PYTHONUNBUFFERED": "1"}
-            cmd = self.make_command(cfg_path, [t["room"] for t in takes], profiles, ab, separate_only)
+            cmd = self.make_command(cfg_path, [t["room"] for t in takes], profiles, ab, separate_only, again)
             job.log.append("$ " + " ".join(cmd[1:]))
             job.lines = 1
             try:

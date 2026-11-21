@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 import os
+import resource
 import shutil
 import signal
+import subprocess
 import sys
 import time
 import traceback
@@ -184,18 +188,123 @@ def _print(rep: dict) -> None:
         print(f"  -> {kind}: {p}")
 
 
+MEMORY_FLOOR_GB = 4  # the least a run may use, whatever the machine has free
+
+
+def memory_limit() -> str:
+    """How much memory a run may use, as systemd writes it ("15G"), or "off". MOOZ_MEMORY_MAX
+    sets it (REHEARSAL_MEMORY_MAX: the older name). By default it is what the machine can spare
+    when the run starts: four fifths of the memory free now, at most half of all there is, at
+    least 4G. A take needs about 0.5 GB per minute on top of 1.3 GB (4.1 GB for one of 5:40), and
+    a fixed 4G stopped such takes half-way."""
+    named = os.environ.get("MOOZ_MEMORY_MAX") or os.environ.get("REHEARSAL_MEMORY_MAX")
+    if named:
+        return named
+    try:
+        with open("/proc/meminfo") as f:
+            kb = {line.split(":")[0]: int(line.split()[1]) for line in f if line.startswith(("MemTotal:", "MemAvailable:"))}
+        gb = min(0.5 * kb["MemTotal"], 0.8 * kb["MemAvailable"]) / 2 ** 20
+    except (OSError, KeyError, ValueError, IndexError):
+        gb = MEMORY_FLOOR_GB
+    return f"{max(MEMORY_FLOOR_GB, int(gb))}G"
+
+
+def _with_huge_pages(env) -> dict:
+    """env with glibc's allocator told to ask for huge pages (GLIBC_TUNABLES, glibc 2.35 or later;
+    ignored elsewhere), unless the variable is set already. A run allocates and frees whole stems
+    all the time (229 MB each for five minutes); in 4 KiB pages that was 7.4 million page faults
+    a take and a fifth of its processor time, in 2 MB pages a quarter of that (docs/SPEED.md).
+    The allocator reads the variable when the process starts: hence a start of its own."""
+    return dict(env) | ({} if "GLIBC_TUNABLES" in env else {"GLIBC_TUNABLES": "glibc.malloc.hugetlb=1"}) | {"_MOOZ_TUNED": "1"}
+
+
+def _run_with_huge_pages() -> None:
+    """Where no memory scope starts the run again (no systemd, or the limit off): start it again
+    here, once, for the same variable."""
+    if os.environ.get("_MOOZ_TUNED") or "GLIBC_TUNABLES" in os.environ or not sys.platform.startswith("linux"):
+        return
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os.execve(sys.executable, [sys.executable, "-m", "mooz.cli", *sys.argv[1:]], _with_huge_pages(os.environ))
+
+
 def _run_in_memory_scope() -> None:
-    """Re-launch inside a memory-capped systemd scope, so that if processing ever
-    runs out of memory only this program is stopped, not the desktop session.
-    REHEARSAL_MEMORY_MAX sets the cap (default 4G); "off" disables it."""
-    limit = os.environ.get("REHEARSAL_MEMORY_MAX", "4G")
+    """Run again inside a memory-capped systemd scope and wait for it, so that if processing ever
+    runs out of memory only this program is stopped, not the desktop session. The system stops
+    such a run with a kill, which leaves it no word to say: so the one that waits says it, to the
+    terminal and to a front end (progress event "stopped")."""
+    limit = memory_limit()
     if os.environ.get("_REHEARSAL_IN_SCOPE") or limit == "off" or not sys.platform.startswith("linux"):
         return
     if not shutil.which("systemd-run") or not os.environ.get("XDG_RUNTIME_DIR"):
         return
-    os.environ["_REHEARSAL_IN_SCOPE"] = "1"
-    os.execvp("systemd-run", ["systemd-run", "--user", "--scope", "--quiet", "-p", f"MemoryMax={limit}",
-                              "-p", "MemorySwapMax=0", sys.executable, "-m", "mooz.cli", *sys.argv[1:]])
+    unit = f"mooz-{os.getpid()}-{int(time.time())}"
+    child = subprocess.Popen(["systemd-run", "--user", "--scope", "--quiet", "--unit", unit, "-p", f"MemoryMax={limit}",
+                              "-p", "MemorySwapMax=0", sys.executable, "-m", "mooz.cli", *sys.argv[1:]],
+                             env=os.environ | {"_REHEARSAL_IN_SCOPE": "1"})
+    # Ctrl-C and the web app's Cancel reach the run itself (the same process group); a SIGTERM sent to this one
+    # alone is passed on. The run takes the first and ignores the rest, so its clean-up is not cut short
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    signal.signal(signal.SIGTERM, lambda signum, frame: child.poll() is None and child.send_signal(signal.SIGTERM))
+    code = child.wait()
+    if code in (-signal.SIGKILL, 128 + signal.SIGKILL):
+        why = ""
+        try:
+            why = subprocess.run(["systemctl", "--user", "show", "-p", "Result", "--value", f"{unit}.scope"],
+                                 capture_output=True, text=True, timeout=10).stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            pass
+        if why == "oom-kill":
+            progress.emit("stopped", why="memory", limit=limit)
+            print(f"\nmooz: the system stopped the run: it needed more memory than the {limit} it may use. Takes already "
+                  "finished are kept: run it again and only the others are made. MOOZ_MEMORY_MAX sets the limit "
+                  "(for example MOOZ_MEMORY_MAX=24G, or off).", file=sys.stderr, flush=True)
+        else:
+            progress.emit("stopped", why="killed", limit=limit)
+            print("\nmooz: the run was killed from outside. Takes already finished are kept: run it again and only "
+                  "the others are made.", file=sys.stderr, flush=True)
+    subprocess.run(["systemctl", "--user", "reset-failed", f"{unit}.scope"], capture_output=True)  # a stopped scope stays listed
+    sys.exit(code if code >= 0 else 128 - code)
+
+
+def _code() -> str:
+    """One name for the program as it is: every module's source."""
+    h = hashlib.blake2b(digest_size=8)
+    for f in sorted(Path(__file__).parent.glob("*.py")):
+        h.update(f.name.encode())
+        h.update(f.read_bytes())
+    return h.hexdigest()
+
+
+def made_with(take: takes.Take, cfg: dict) -> str:
+    """One name for what a take's master is made with, as far as it is known before it is made:
+    the program, the take's settings (the song's own sections in, its style not yet), and the
+    recorder's files (name, size, time). Written into the take's report; a take whose report
+    has this name and whose files are there is up to date and is not made again. Not in it: what
+    the other takes bring (the tone targets are medians over all of them), which --again is for."""
+    files = [take.room, *take.close.values()] + ([take.mixdown] if take.mixdown else [])
+    settings = {k: v for k, v in cfg.items() if k not in ("_layers", "_cli", "files", "input", "chains")}
+    parts = {"code": _code(), "settings": settings,
+             "files": [[f.name, f.stat().st_size, f.stat().st_mtime_ns] for f in files]}
+    return hashlib.blake2b(json.dumps(parts, sort_keys=True, default=str).encode(), digest_size=12).hexdigest()
+
+
+def up_to_date(take: takes.Take, cfg: dict, stamp: str, ab: bool) -> dict | None:
+    """The take's report, if its master was made with stamp and every file it names is there
+    (and the A/B file, if one is asked for)."""
+    out = take.root / cfg["output"]["dir"]
+    try:
+        rep = json.loads((out / "reports" / f"{take.name}.json").read_text())
+    except (OSError, ValueError):
+        return None
+    outputs = rep.get("outputs") or {}
+    if rep.get("made_with") != stamp or "wav" not in outputs or (ab and "ab" not in outputs):
+        return None
+    for kind, path in outputs.items():
+        name = Path(path).name
+        if not any((d / name).exists() for d in (out, out / "reports", out / "stages")):
+            return None
+    return rep
 
 
 def _learn_balance(reports: Path, cfg: dict) -> None:
@@ -271,7 +380,10 @@ def _summary(rep: dict) -> dict:
 
 
 def _stop(signum, frame) -> None:
-    """SIGTERM (the web app's Cancel) leaves as an exit, so work folders are removed on the way out."""
+    """SIGTERM (the web app's Cancel) leaves as an exit, so work folders are removed on the way out.
+    Only the first one: a second (the same Cancel, passed on by the process that waits for this
+    one) must not cut that clean-up short."""
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
     sys.exit(143)
 
 
@@ -288,6 +400,9 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--analyze", action="store_true", help="only measure and show the planned EQ, write nothing")
     ap.add_argument("--ab", action="store_true", help="also write <name>_AB.wav, alternating original/processed at equal loudness")
     ap.add_argument("--no-mp3", action="store_true", help="skip MP3 export")
+    ap.add_argument("--again", action="store_true",
+                    help="master again also the takes that are up to date (made with these very settings, recordings and "
+                         "program, all their files there); they are left as they are otherwise")
     ap.add_argument("--no-chain-cache", action="store_true",
                     help="run every stem's chain again and keep none for the next run ([chains] enabled = false)")
     ap.add_argument("--preset", metavar="NAME", action="append",
@@ -353,8 +468,12 @@ def main(argv: list[str] | None = None) -> None:
         for preset in presets:
             cfg = config.load(cfg_path, preset or None, overrides)
             print(f"settings: {cfg_path or 'built-in defaults'}" + (f" + preset {preset}" if preset else ""))
+            # what is up to date is left as it is: a run that was stopped goes on where it stopped
+            stamps = {t.name: made_with(t, config.for_file(cfg, t.name)) for t in found} if not args.analyze else {}
+            kept = {} if args.again or args.analyze else {
+                t.name: rep for t in found if (rep := up_to_date(t, config.for_file(cfg, t.name), stamps[t.name], args.ab))}
             if not args.analyze:  # all the takes' stems first: each song's tone targets are then the same, whatever the order
-                ahead = [t for t in found if t.close]
+                ahead = [t for t in found if t.close and t.name not in kept]
                 for k, take in enumerate(ahead):
                     progress.emit("prepare", take=take.name, i=k, n=len(ahead))
                     try:
@@ -365,6 +484,10 @@ def main(argv: list[str] | None = None) -> None:
                 print(f"\n{take.name}" + (f" [{preset}]" if preset else ""))
                 progress.emit("unit", i=unit)
                 unit += 1
+                if take.name in kept:
+                    print("  up to date: mastered with these settings, recordings and program (--again makes it again)", flush=True)
+                    progress.emit("unit_done", i=unit - 1, ok=True, seconds=0.0, summary=_summary(kept[take.name]), kept=True)
+                    continue
                 t0 = time.time()
                 try:
                     rep = pipeline.process_file(take, config.for_file(cfg, take.name), analyze_only=args.analyze, ab=args.ab)
@@ -376,8 +499,14 @@ def main(argv: list[str] | None = None) -> None:
                                   error=f"{type(e).__name__}: {e}")
                     continue
                 _print(rep)
-                print(f"  ({time.time() - t0:.0f}s)", flush=True)
-                progress.emit("unit_done", i=unit - 1, ok=True, seconds=round(time.time() - t0, 1), summary=_summary(rep))
+                report = take.root / cfg["output"]["dir"] / "reports" / f"{take.name}.json"
+                if not args.analyze and report.exists():  # the report is the last file written: now it says what made it
+                    rep["made_with"] = stamps[take.name]
+                    report.write_text(json.dumps(rep, indent=2, default=float))
+                peak_gb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 2 ** 20
+                print(f"  ({time.time() - t0:.0f}s; the run has used {peak_gb:.1f} GB of memory at most)", flush=True)
+                progress.emit("unit_done", i=unit - 1, ok=True, seconds=round(time.time() - t0, 1), summary=_summary(rep),
+                              peak_gb=round(peak_gb, 1))
     progress.emit("end", failed=failed)
     if failed:
         sys.exit(f"\n{len(failed)} failed: {', '.join(failed)}")

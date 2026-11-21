@@ -28,6 +28,11 @@ kept stem chains, step 5's blind comparison); the rest of steps 5–9 is not sta
   close stem's lows are now turned to the room's phase (`[multitrack] phase_below_hz`). On three
   takes the master gains 3–5 dB at 63 Hz, see "The bass's lowest notes in the merge". To be
   heard: `trial-lows` against `trial-base`.
+- 16 November: runs of the rehearsal of 12 November stopped half-way with nothing said: the 4 GB
+  memory cap, reached by a take of 5:40. The cap now goes with the machine, a stopped run says why,
+  and a take that is up to date is not made again. And the mix was liked better than the master by
+  ear: the mix is now written next to it (`_mix`), and the two can be compared blind at the same
+  loudness. See "Stopped runs, and the mix against the master".
 - Where the 8 takes of 5 November stand against the targets, and what that says about the order
   of the remaining steps: "Where it stands" below. In short: the limiter now works 14–18 % of
   the time (the target is under 5 %), which makes step 5's trace the next thing to do.
@@ -696,6 +701,11 @@ On Miramare, the first Vita and the first Biancaneve (10 November, all at −14.
 **To do:** listen (`trial-base` against `trial-pro`, and both against `full`). What is kept
 becomes the defaults; then all 8 takes are mastered again.
 
+Since 14 November `trial-pro`'s five settings are also a built-in preset, `pro`
+([pro.toml](../mooz/presets/pro.toml)), so that a project in another folder can run them: a new
+project's form in the web app now lists every built-in preset instead of a fixed six. Still not
+judged by ear.
+
 ## Kept chains and comparing blind (11 November 2026)
 
 Two things stood between a setting and a judgement of it: every tweak cost a full run, and the
@@ -839,6 +849,84 @@ same sound. The room is the reference because the other stems and the original a
   rehearsal.
 - Not done: the 8 takes under `full` and `simple_bass` (they still have the old merge); the fix on
   other instruments (`phase_below_hz` is 0 for them: not measured as needed).
+
+## Stopped runs, and the mix against the master (16 November 2026)
+
+Reported after mastering the rehearsal of 12 November (7 takes, `default` and `pro`) from the web
+app: a take sometimes stops with no error shown, and starting again makes every finished take
+again; and on both profiles the mix sounds better than the master, punchier and louder.
+
+**Why the runs stopped.** The system's log has it: on 14 November at 20:43 and on 16 November at
+10:16 the run was killed inside its own memory scope ("Memory cgroup out of memory", 4.14 and
+4.15 GB in use, the scope "Failed with result 'oom-kill'"). The cap was a fixed 4 GB.
+
+| Lisa dice, 5:40, the longest take | highest memory in use |
+|---|---|
+| reading, preparing, stems from the cache | 0.9–1.1 GB |
+| the song's character | 2.7 GB |
+| the stem chains | 4.1 GB (the hi-hat's; the bass's 4.0, the snare's 3.9) |
+| drum bus, blend, mix bus, master, files, figures | 2.4–3.3 GB |
+| the same with every chain kept but the bass's | 3.7 GB (the bass's chain; else 3.1) |
+
+- About 1.3 GB plus 0.5 GB per minute of take: a take over five and a half minutes is at the old
+  cap, and whether it goes through was a matter of a few megabytes.
+- A kill leaves the run no word to say. The app showed "the run stopped before this take was
+  finished"; a terminal, "Killed".
+
+What changed (none of it in the sound):
+
+- **The cap goes with the machine**: four fifths of the memory free when the run starts, at most
+  half of all there is, at least 4G (here 15G). `MOOZ_MEMORY_MAX` sets it; the old name works.
+- **A stopped run says why.** The run is now a child of the process that starts it, which waits,
+  asks systemd how the scope ended, and says "the system stopped the run: it needed more memory
+  than the 15G it may use", to the terminal and to the app (the job's message and the take it
+  stopped at).
+- **What is up to date is not made again.** A take's report carries the name of what made it
+  (program, the take's settings, the recorder's files); with that name and its files in place the
+  take is left as it is, in the app ("up to date") and on the command line. `--again`, or "Also
+  what is up to date" in the app, makes it again. What the other takes bring (tone targets) is
+  not in the name.
+- A run prints the most memory it has used after each take.
+- Checked on a linked copy of Lisa dice: with the limit at 2G the run ends with the message and
+  exit code 137; with the machine's 15G it goes through (4.0 GB at most, 315 s; `pro` after it
+  156 s with 7 chains kept); the same command again makes nothing and says "up to date" twice.
+- Not done: using less memory. The stem loop holds the recording twice, four trigger curves and
+  each chain's own copies in 64-bit; halving that is work in `_tracks`, which costs every kept
+  chain once.
+
+**The mix against the master.** The master step is three things after the mix (`5_mix`): one
+gain to −14 LUFS, the clipper, the limiter, with the ceiling at −1 dBTP. Measured on the 7 takes:
+
+| | `default` | `pro` |
+|---|---|---|
+| the mix's own loudness | −10.5 to −13.6 LUFS | −9.8 to −13.2 LUFS |
+| its highest peak | +3.4 to +5.7 dBTP | +4.2 to +6.5 dBTP |
+| its peaks over its loudness (PLR) | 15.5–17.4 dB | 15.7–17.5 dB |
+| the master's | 13.0 dB on every take | 13.0 dB on every take |
+| so the master step takes off the peaks | 2.5–4.4 dB | 2.7–4.5 dB |
+| and plays the take quieter than the mix by | 0.4–3.5 dB | 0.8–4.2 dB |
+| clipper, at most / limiter at work | 0.8–2.6 dB / 9–15 % of the time | 2.2–4.0 dB / 2–7 % |
+
+- Both things heard are there. **Louder**: on the take's page everything plays 12 dB under its
+  real level, so the mix, whose peaks stand 3–6 dB over full scale, plays as it is, and it is up
+  to 4 dB louder than the master. **Punchier**: the master has 2.5–4.5 dB less of every drum
+  hit's height. That is not a setting gone wrong: −14 LUFS under a −1 dBTP ceiling leaves
+  exactly 13 dB for the peaks, whatever the mix.
+- A file cannot hold the mix as the page plays it. What it can hold is the mix with its highest
+  peak at the ceiling: −16.5 to −18.5 LUFS, 2.5–4.5 dB quieter than the master, all peaks whole.
+  That is now written next to every master: `<take>_mix.wav` and `.mp3` (`[output] mix`), the
+  mix with the master's fades and that one gain. On Lisa dice: −17.4 LUFS (`default`) and −17.5
+  (`pro`), PLR 16.4 and 16.5, against the masters' −14.0 and 13.0.
+- Which of the two was liked for its level and which for its peaks, the ear can now say:
+  Compare blind takes a master against its own mix and turns the louder down to the other.
+- If the mix still wins at the same loudness, the remedy is a lower target, not another limiter:
+  at −16 LUFS the master step takes 0.5–2.5 dB off the peaks, at −17 at most 1.5 (from the PLRs
+  above; not run). The other way, to keep −14, is to bring the peaks down inside the mix, hit by
+  hit on the drum stems, where 3 dB is heard less than on the whole mix. Neither is decided.
+
+To do: master the 7 takes again (the files of 16 November have no `_mix` and no name of what made
+them, and the kept chains are of the program before this change: one full run); then the blind
+comparison of masters and mixes.
 
 ## Trying it today with settings only
 

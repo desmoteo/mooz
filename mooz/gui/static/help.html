@@ -31,10 +31,19 @@ the room track, the inputs are close tracks.</p>
     what is left. Cancel stops it; takes already finished keep their masters.</li>
   <li>Separate only does the slow part (splitting the takes into stems, on the graphics card) and keeps the stems for later.</li>
   <li>A/B files too writes, next to each master, a file with the recording and the master in turns at the same loudness.</li>
+  <li>A take already mastered with the same settings, recordings and program is left as it is: its row says "up to
+    date". So a job that stopped half-way can simply be started again, and goes on where it stopped. Tick "Also what
+    is up to date" to make those again too.</li>
+  <li>If a job stops with "the system stopped the run: it needed more memory", a take was too long for the memory the
+    run may use. The limit goes with the memory the machine has free when the job starts: close what you do not need
+    and start it again.</li>
 </ul>
 <p>Each row then shows, per profile: the master's loudness, how much of the recording's loudness range it kept, and how
 much of the time the limiter works (in orange above 5 %: the master is pushed hard). Original, Play and A/B play the
-recording, the master and the A/B file, and going between them keeps the moment of the song.</p>
+recording, the master and the A/B file, and going between them keeps the moment of the song. Mix plays the mix
+before the master step, which is also written as a file of its own (<code>&lt;take&gt;_mix</code>): nothing is
+clipped or limited in it, so the drum hits keep all their height, and it is quieter than the master by what the
+master step takes off them.</p>
 
 <h2 id="h-take">A take's page</h2>
 <p>Press a take's title, or Stages under a profile. The page draws what happened to the take, in two ways, and every
@@ -96,6 +105,9 @@ On a take's page, Compare blind takes two profiles that both have a master of th
     a snare fill, the start of a chorus.</li>
   <li>Keys: <kbd>A</kbd> and <kbd>B</kbd> choose the side, <kbd>X</kbd> the other one, <kbd>Space</kbd> plays and pauses,
     <kbd>[</kbd> and <kbd>]</kbd> set the loop.</li>
+  <li>The list also holds each profile's mix ("pro, the mix"). A master against its own mix is the master step
+    alone, at the same loudness: on a take's page the mix plays louder than the master, and louder nearly always
+    sounds better.</li>
   <li>Say which sounds better, or that you hear no difference, with a few words on why if you like. Only then does the
     page say which was which. Another round draws A and B again; several rounds on several takes say more than one.</li>
 </ul>

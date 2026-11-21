@@ -82,7 +82,7 @@ def discover(paths: list[Path], skip_dirs: set[str], room: str = "auto") -> list
     groups: dict[tuple[Path, str], tuple[dict[str, Path], str]] = {}
     takes: list[Take] = []
     for f in found:
-        if f.stem.endswith("_AB"):
+        if f.stem.endswith(("_AB", "_mix")):  # our own files, should they lie among the recordings
             continue
         m = _TRACK.match(f.stem)
         if not m:

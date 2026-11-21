@@ -219,6 +219,7 @@ def _balance(out: np.ndarray, original: np.ndarray, g_orig: float, processed_fil
     return gains, report
 
 
+@chaincache.uses
 def _tracks(y: np.ndarray, fs: int, cfg: dict, stems: dict[str, Path] | None, start: int, end: int,
             work: Path, stems_dir: Path, details: dict, stage: stages.StageWriter, profiles: dict | None = None,
             targets: dict | None = None, tempo_bpm: float | None = None,
@@ -562,6 +563,18 @@ def _merged(take: takes.Take, room: dict[str, Path], start: int, fs: int, cfg: d
     return multitrack.merge(take, room, close, fs, cfg, root)
 
 
+CHARACTER_MELODIC, CHARACTER_HITS = ("vocals", "guitar", "guitar_left", "guitar_right"), ("kick", "snare", "toms")
+
+
+@chaincache.uses
+def _characterise(y: np.ndarray, fs: int, stems: dict[str, Path] | None, start: int, end: int) -> dict:
+    """Stage 0: the song's character, from the recording as prepared and a few raw stems."""
+    read = lambda n: sf.read(stems[n], dtype="float64", always_2d=True, start=start, stop=end)[0]  # noqa: E731
+    raw = {n: read(n) for n in CHARACTER_MELODIC if stems and n in stems}
+    trig = {k: effects.hit_trigger(read(k), fs, *effects.TRIGGER_BANDS[k]) for k in CHARACTER_HITS if k in stems} if stems else None
+    return character.characterise(y, fs, raw, trig)
+
+
 def process_file(path: Path | takes.Take, cfg: dict, *, analyze_only: bool = False, ab: bool = False) -> dict:
     """One take (or one file, a take of its own) through the whole chain; returns the report.
     cfg: from config.for_file()."""
@@ -670,21 +683,14 @@ def _process(take: takes.Take, cfg: dict, work: Path | None, analyze_only: bool,
     ccfg = cfg["character"]
     if ccfg["enabled"]:
         progress.stage("character")
-        melodic, hits = ("vocals", "guitar", "guitar_left", "guitar_right"), ("kick", "snare", "toms")
-
-        def characterise() -> dict:
-            read = lambda n: sf.read(stems[n], dtype="float64", always_2d=True, start=start, stop=end)[0]  # noqa: E731
-            raw = {n: read(n) for n in melodic if stems and n in stems}
-            trig = {k: effects.hit_trigger(read(k), fs, *effects.TRIGGER_BANDS[k]) for k in hits if k in stems} if stems else None
-            return character.characterise(y, fs, raw, trig)
-
         if chains is not None:  # it reads the recording as prepared and these stems, and no settings
             rep["character"] = chains.character(
                 {"what": "character", "recording": chaincache.ident(path), "span": [start, end], "fs": fs,
                  "prepared": [cfg["highpass"], cfg["hum"]],
-                 "stems": {n: chaincache.ident(stems[n], work) for n in melodic + hits if n in stems}}, characterise)
+                 "stems": {n: chaincache.ident(stems[n], work) for n in CHARACTER_MELODIC + CHARACTER_HITS if n in stems}},
+                lambda: _characterise(y, fs, stems, start, end))
         else:
-            rep["character"] = characterise()
+            rep["character"] = _characterise(y, fs, stems, start, end)
         style = rep["character"]["style"]
         if ccfg["adapt"] and style in ccfg["styles"]:  # the style's table, under the song's own settings
             cfg = config.for_file(cfg, take.name, style)
@@ -752,6 +758,7 @@ def _process(take: takes.Take, cfg: dict, work: Path | None, analyze_only: bool,
     if cfg["consistency"]["enabled"]:
         y, rep["consistency"] = _consistency(y, fs, cfg, out_dir, take.name)
     stage.write("5_mix", y, fs)  # stage 5, before loudness and limiting
+    mix = y if cfg["output"]["mix"] else None  # the same, for a file of its own next to the master (below)
 
     # Loudness, clipper, limiter, fades
     progress.stage("master")
@@ -780,6 +787,21 @@ def _process(take: takes.Take, cfg: dict, work: Path | None, analyze_only: bool,
             rep["outputs"]["mp3"] = str(mp3)
         else:
             print("  note: ffmpeg not found, skipping MP3", file=sys.stderr)
+    if mix is not None:
+        # The mix before the master step, as a file: its fades, and the one gain that puts its highest peak at the
+        # ceiling. Nothing is clipped or limited, so it is as quiet under the master as that step shaves the peaks
+        # (2.5-4.5 dB on the takes of November 2026), and from take to take as loud as each one's peaks allow.
+        mix = trim.fade(mix, fs, tcfg["fade_in_s"], tcfg["fade_out_s"])
+        mix_gain = cfg["loudness"]["ceiling_dbtp"] - loudness.true_peak_db(mix, cfg["limiter"]["oversample"])
+        mix *= 10 ** (mix_gain / 20)
+        rep["mix"] = loudness.summary(mix, fs)[0] | {"gain_db": round(float(mix_gain), 2)}
+        mix_path = out_dir / f"{take.name}_mix.wav"
+        export.write_wav(mix_path, mix, fs, ocfg["bit_depth"])
+        rep["outputs"]["mix"] = str(mix_path)
+        if ocfg["mp3"] and export.write_mp3(mix_path, mix_path.with_suffix(".mp3"), ocfg["mp3_bitrate"],
+                                            tags | {"title": f"{title} (the mix, before the master)"}):
+            rep["outputs"]["mix_mp3"] = str(mix_path.with_suffix(".mp3"))
+        del mix
     if ab:
         # Level both versions so the original's peaks still fit under the ceiling.
         # against what the recorder itself made of the take: its mix-down if it wrote one, else the recording

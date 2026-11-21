@@ -59,7 +59,19 @@ Removing a project from the list deletes nothing else.
   A/B of a take keeps the moment of the song (the recording is entered at the master's trim).
 - Tick takes and profiles, choose A/B files or separation only, press Remaster. That is
   `mooz <takes> -c <rehearsal.toml> --preset a --preset b [--ab]`.
-- One job at a time: the GPU and the 4 GB memory cap do not leave room for two.
+- One job at a time: the GPU and the memory do not leave room for two.
+- **What is up to date is left as it is.** A take already mastered with these very settings,
+  recordings and program, all its files there, is not made again: its row in the job says "up to
+  date", and a job where nothing is to do says so. So a job that stopped half-way is started again
+  and goes on where it stopped. "Also what is up to date" makes those again too
+  (`--again`); the take page's "Remaster this take" always does.
+- **A run stopped for memory says so.** The system stops a run that needs more memory than it
+  may use with a kill, and the run itself cannot say anything; the job then reads "The system
+  stopped the run: it needed more memory than the 15G it may use", with the take it stopped at.
+  Until 16 November 2026 the limit was a fixed 4 GB, which a take of 5:40 reaches; it now goes
+  with the machine ([DESIGN.md](DESIGN.md), Performance).
+- **Mix**, next to Play and A/B: the mix before the master step as a file (`<take>_mix`), nothing
+  clipped or limited.
 - The masters go next to the recordings (`<recordings>/<output dir>`), not next to the
   `rehearsal.toml`. Two projects over the same recordings therefore share those folders: a
   profile run from one overwrites the other's masters of that profile.
@@ -197,6 +209,12 @@ two profiles' masters of the take as A and B.
   words on why. It is written to `listening.json` next to `rehearsal.toml`
   ([listening.py](../mooz/gui/listening.py)): the take, what was behind A and
   behind B, the choice, the note, the loop, and when each of the two masters was made.
+- **A master against its own mix.** The list of sides also holds each profile's mix
+  (`<take>_mix`, "pro, the mix"): the master step alone, at the same loudness. On the take's page
+  the mix plays up to 4 dB louder than the master (both 12 dB under their real level), and the
+  louder of two nearly always sounds better; here the louder file is turned down to the other's
+  loudness and what is left is what the clipper and the limiter did. The page says by how much
+  it turned it down once the choice is made.
 - **Another round** draws A and B again and pauses the song, so the change of sides cannot
   be heard as a change of sound.
 - **What it adds up to.** The takes' page counts the verdicts per pair of profiles
@@ -313,6 +331,13 @@ Changes outside the app's own folder, all small:
     the single start time, not from a measurement of the output.
 - Not tried: the page in Firefox or Safari (the stems are 32-bit float WAV files, which
   Chrome plays).
+- 16 November 2026, in headless Chrome on a throw-away project over a linked copy of Lisa dice
+  (5:40, the take a run had stopped at): the Mix button plays `…_mix.mp3`; a job on two profiles
+  that are up to date ends as "Nothing to do: all 2 masters are up to date", both rows "up to
+  date"; Compare blind offers pro, "pro, the mix", default, "default, the mix", starts on the
+  newest master and its mix, turns the master down 3.5 dB, and the verdict is kept as `pro:mix`
+  over `pro`. A run of that take with the limit set to 2G ended with the message and exit code
+  137; with the limit the machine gives (15G) it went through, 4.0 GB at most.
 - Not tried: a job that has to separate. The separation's events are tested with a stand-in,
   not on the GPU.
 

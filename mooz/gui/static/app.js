@@ -96,7 +96,9 @@ function jobHeadline(j) {
   const n = j.units.length, verb = j.separate_only ? "Separating" : "Remastering";
   if (j.state === "running") return `${verb} ${j.project.name}`;  // set as text, not as HTML
   const failed = j.units.filter((u) => u.state === "failed").length;
-  if (j.state === "done") return `Done: ${plural(n, j.separate_only ? "take" : "master")} in ${span(j.elapsed)}`;
+  const kept = j.units.filter((u) => u.kept).length;  // already mastered with these very settings: not made again
+  if (j.state === "done" && kept === n) return `Nothing to do: ${n === 1 ? "the master is" : `all ${n} masters are`} up to date`;
+  if (j.state === "done") return `Done: ${plural(n - kept, j.separate_only ? "take" : "master")} in ${span(j.elapsed)}${kept ? `, ${kept} already up to date` : ""}`;
   if (j.state === "cancelled") return "Cancelled";
   return failed && failed < n ? `Finished, ${failed} of ${n} failed` : "The job failed";
 }
@@ -148,7 +150,7 @@ function renderJob() {
   list.innerHTML = j.units.map((u) => `<li class="${u.state}">
       <span class="dot" title="${u.state}"></span><span class="what">${esc(u.take)}</span><span class="muted what">${esc(u.profile)}</span>
       <span class="bar"><i style="width:${Math.round(u.frac * 100)}%"></i></span>
-      <span class="secs num">${u.seconds != null ? span(u.seconds) : u.state === "running" ? `${Math.round(u.frac * 100)} %` : ""}</span>
+      <span class="secs num" ${u.kept ? 'title="Already mastered with these settings, recordings and code: not made again"' : ""}>${u.kept ? "up to date" : u.seconds != null ? span(u.seconds) : u.state === "running" ? `${Math.round(u.frac * 100)} %` : ""}</span>
       ${u.error ? `<span class="unit-error">${esc(u.error)}</span>` : ""}</li>`).join("");
   list.scrollTop = top;
 }
@@ -258,7 +260,7 @@ async function loadProject(quiet = false) {
     const p = await api("GET", `/api/projects/${id}`);
     if (S.route.id !== id) return;
     S.project = p;
-    if (!S.sel[id]) S.sel[id] = { takes: new Set(p.takes.map((t) => t.name)), profiles: new Set(p.run), ab: false };
+    if (!S.sel[id]) S.sel[id] = { takes: new Set(p.takes.map((t) => t.name)), profiles: new Set(p.run), ab: false, again: false };
     const sel = S.sel[id], names = new Set(p.takes.map((t) => t.name)), profs = new Set(p.profiles.map((x) => x.name));
     for (const t of [...sel.takes]) if (!names.has(t)) sel.takes.delete(t);
     for (const x of [...sel.profiles]) if (!profs.has(x)) sel.profiles.delete(x);
@@ -287,13 +289,15 @@ function resultCell(p, take, profile) {
   const r = take.results[profile];
   if (!r) return `<td class="result none" title="Not mastered with ${esc(profile)} yet">—</td>`;
   const f = r.files, label = `${take.title} (${profile})`, key = esc(`${p.id}/${take.name}`);
-  const src = f.mp3 || f.wav, ab = f.ab_mp3 || f.ab_wav;
+  const src = f.mp3 || f.wav, ab = f.ab_mp3 || f.ab_wav, mix = f.mix_mp3 || f.mix_wav;
   const when = r.when ? new Date(r.when * 1000).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }) : "";
   const hot = r.limited_pct > 5;
   return `<td class="result">
     <div class="top">${r.lufs != null ? `<span title="Mastered ${esc(when)}"><span class="lufs num">${minus(r.lufs)}</span> <span class="more">LUFS</span></span>` : ""}
       ${src ? `<button class="quiet play" type="button" data-act="play" data-take="${key}" data-src="${esc(fileUrl(p.id, take.root, src))}" data-label="${esc(label)}">Play</button>` : ""}
-      ${ab ? `<button class="quiet play" type="button" data-act="play" data-take="${key}" data-src="${esc(fileUrl(p.id, take.root, ab))}" data-label="${esc(label)}, original and master in turns" title="Original and master in turns, at the same loudness">A/B</button>` : ""}</div>
+      ${ab ? `<button class="quiet play" type="button" data-act="play" data-take="${key}" data-src="${esc(fileUrl(p.id, take.root, ab))}" data-label="${esc(label)}, original and master in turns" title="Original and master in turns, at the same loudness">A/B</button>` : ""}
+      ${mix ? `<button class="quiet play" type="button" data-act="play" data-take="${key}" data-src="${esc(fileUrl(p.id, take.root, mix))}" data-label="${esc(label)}, the mix before the master"
+        title="The mix before the master step, as a file: nothing clipped or limited${r.mix_lufs != null ? `, ${minus(r.mix_lufs)} LUFS` : ""}. Quieter than the master by what that step takes off the peaks">Mix</button>` : ""}</div>
     ${r.lufs != null ? `<div class="more num"><span title="Loudness range: the master's, of the recording's">range ${minus(r.lra_lu)} of ${minus(r.original_lra_lu)} LU</span>,
         <span class="${hot ? "warn" : ""}" title="${hot ? "The limiter works more than 5 % of the time: the master is pushed hard." : "How much of the time the limiter works."}">limiter ${minus(r.limited_pct, 0)} %</span></div>` : ""}
     <div class="more"><a href="${takeUrl(p.id, take.name, profile)}" title="Every stage of this take, to listen to">Stages</a>
@@ -329,6 +333,7 @@ function renderProject() {
           <input type="checkbox" data-act="tick-profile" data-profile="${esc(x.name)}" ${sel.profiles.has(x.name) ? "checked" : ""} ${x.error ? "disabled" : ""}>${esc(x.name)}</label>`).join("")}</div></div>
       <div class="go">
         <label title="Original and master in turns every 10 s, at the same loudness"><input type="checkbox" data-act="tick-ab" ${sel.ab ? "checked" : ""}> A/B files too</label>
+        <label title="A take already mastered with these very settings is left as it is, so a job that stopped half-way goes on where it stopped. Tick this to make those again too."><input type="checkbox" data-act="tick-again" ${sel.again ? "checked" : ""}> Also what is up to date</label>
         <button class="quiet" type="button" data-act="separate" id="separate" title="Only split the takes into stems (the slow part, on the GPU) and keep them for later">Separate only</button>
         <button type="button" data-act="remaster" id="remaster"></button>
       </div>
@@ -709,13 +714,24 @@ function markWorking() {
 const B = { key: "", bufs: {}, gains: {}, srcs: [], level: {}, lead: {}, dur: 0, playing: false, at: 0, t0: 0, loop: [null, null], timer: null };
 
 const blindTake = () => (S.project && S.map ? S.project.takes.find((x) => x.name === S.map.take.name) : null);
-const blindFile = (r) => r.files.wav || r.files.mp3;
+// A side of the comparison is a profile's master ("pro"), or the mix it was made from ("pro:mix": <take>_mix, the
+// stage before the master step at the one gain that puts its highest peak at the ceiling).
+const MIX = ":mix";
+const sideName = (id) => (id.endsWith(MIX) ? `${id.slice(0, -MIX.length)}, the mix` : id);
+function sideOf(tk, id) {
+  const mix = id.endsWith(MIX), r = tk.results[mix ? id.slice(0, -MIX.length) : id];
+  if (!r) return null;
+  const file = mix ? r.files.mix_wav || r.files.mix_mp3 : r.files.wav || r.files.mp3, lufs = mix ? r.mix_lufs : r.lufs;
+  if (!file || lufs == null) return null;
+  return { id, mix, file, lufs, lra: mix ? r.mix_lra_lu : r.lra_lu, plr: mix ? r.mix_plr_db : r.plr_db, limited: mix ? null : r.limited_pct,
+    trim: r.trim_s || 0, when: r.when || 0 };
+}
 // the profiles this take can be compared under: those with a master, the last made first
 function blindProfiles() {
   const tk = blindTake();
   if (!tk) return [];
-  return Object.keys(tk.results).filter((x) => blindFile(tk.results[x]) && tk.results[x].lufs != null)
-    .sort((x, y) => (tk.results[y].when || 0) - (tk.results[x].when || 0));
+  return Object.keys(tk.results).flatMap((x) => [x, x + MIX]).filter((x) => sideOf(tk, x))
+    .sort((x, y) => sideOf(tk, y).when - sideOf(tk, x).when || x.length - y.length);  // a master, then its own mix
 }
 const blindLoop = () => (B.loop[0] != null && B.loop[1] != null && B.loop[1] - B.loop[0] >= 0.3 ? B.loop : null);
 
@@ -813,17 +829,17 @@ async function blindStart() {
     const ctx = audioCtx();
     const bufs = await Promise.all(pair.map(async (x) => {
       if (B.key === key && B.bufs[x]) return B.bufs[x];
-      const res = await fetch(fileUrl(S.project.id, tk.root, blindFile(tk.results[x])));
-      if (!res.ok) throw new Error(`The master made with ${x} could not be read.`);
+      const res = await fetch(fileUrl(S.project.id, tk.root, sideOf(tk, x).file));
+      if (!res.ok) throw new Error(`The file of ${sideName(x)} could not be read.`);
       return ctx.decodeAudioData(await res.arrayBuffer());
     }));
     if (S.blind !== b || takeKey() !== key) return;  // the page moved on while they loaded
-    const quiet = Math.min(...pair.map((x) => tk.results[x].lufs)), first = Math.min(...pair.map((x) => tk.results[x].trim_s || 0));
+    const quiet = Math.min(...pair.map((x) => sideOf(tk, x).lufs)), first = Math.min(...pair.map((x) => sideOf(tk, x).trim));
     Object.assign(B, { key, bufs: {}, level: {}, lead: {}, at: B.key === key ? B.at : 0, playing: false });
     pair.forEach((x, i) => {
       B.bufs[x] = bufs[i];
-      B.level[x] = 10 ** ((quiet - tk.results[x].lufs) / 20);
-      B.lead[x] = (tk.results[x].trim_s || 0) - first;
+      B.level[x] = 10 ** ((quiet - sideOf(tk, x).lufs) / 20);
+      B.lead[x] = sideOf(tk, x).trim - first;
       if (!B.gains[x]) { B.gains[x] = ctx.createGain(); B.gains[x].connect(ctx.destination); }
       B.gains[x].gain.value = 0;
     });
@@ -841,7 +857,7 @@ async function blindStart() {
 // what a pair of profiles' verdicts add up to, the one chosen more often first
 function tallyHtml(pair) {
   const [x, y] = pair.wins[pair.profiles[0]] >= pair.wins[pair.profiles[1]] ? pair.profiles : [pair.profiles[1], pair.profiles[0]];
-  const parts = [`<strong>${esc(x)}</strong> chosen in ${pair.wins[x]} of ${plural(pair.rounds, "round")}`, `<strong>${esc(y)}</strong> in ${pair.wins[y]}`];
+  const parts = [`<strong>${esc(sideName(x))}</strong> chosen in ${pair.wins[x]} of ${plural(pair.rounds, "round")}`, `<strong>${esc(sideName(y))}</strong> in ${pair.wins[y]}`];
   if (pair.same) parts.push(`no difference heard in ${pair.same}`);
   return `${parts.join(", ")} <span class="muted">(${plural(pair.takes, "take")})</span>`;
 }
@@ -849,7 +865,7 @@ function tallyHtml(pair) {
 function verdictHtml(v, withTake) {
   const when = new Date(v.at).toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
   return `<li class="${v.stale ? "stale" : ""}"><span>${withTake ? `${esc(withTake)}: ` : ""}${v.choice === "same"
-      ? `${withTake ? "no" : "No"} difference heard between ${esc(v.a)} and ${esc(v.b)}` : `<strong>${esc(v.choice)}</strong> over ${esc(v.choice === v.a ? v.b : v.a)}`}${
+      ? `${withTake ? "no" : "No"} difference heard between ${esc(sideName(v.a))} and ${esc(sideName(v.b))}` : `<strong>${esc(sideName(v.choice))}</strong> over ${esc(sideName(v.choice === v.a ? v.b : v.a))}`}${
       v.loop_s ? `, on ${clock(v.loop_s[0])} to ${clock(v.loop_s[1])}` : ""}${v.note ? `: ${esc(v.note)}` : ""}
       <span class="muted">${esc(when)}${v.stale ? ", on masters replaced since: not counted" : ""}</span></span>
     <button class="quiet small" type="button" data-act="blind-take-back" data-id="${esc(v.id)}" title="Remove this verdict from listening.json">Take back</button></li>`;
@@ -865,10 +881,10 @@ function blindHtml() {
     blindEnd();
     S.blind = { key: takeKey(), pair: [ready[0], ready[1]], order: null, on: 0, verdict: null, note: "", loading: false, error: "" };
   }
-  const b = S.blind, r = (x) => tk.results[x];
+  const b = S.blind, r = (x) => sideOf(tk, x);
   const pick = (i) => `<select data-act="blind-pick" data-i="${i}" aria-label="${i ? "Second" : "First"} profile">${ready.map((x) =>
-    `<option value="${esc(x)}" ${x === b.pair[i] ? "selected" : ""}>${esc(x)}</option>`).join("")}</select>`;
-  const name = (i) => (b.verdict ? esc(b.order[i]) : "");
+    `<option value="${esc(x)}" ${x === b.pair[i] ? "selected" : ""}>${esc(sideName(x))}</option>`).join("")}</select>`;
+  const name = (i) => (b.verdict ? esc(sideName(b.order[i])) : "");
   const mine = heard.verdicts.filter((v) => v.take === tk.name);
   const pair = heard.pairs.find((x) => x.profiles.includes(b.pair[0]) && x.profiles.includes(b.pair[1]));
   return `<div class="blind">
@@ -889,9 +905,11 @@ function blindHtml() {
       <span class="muted num" id="blind-loop"></span></div>
     <p class="muted keys">Keys: <kbd>A</kbd> and <kbd>B</kbd> choose the side, <kbd>X</kbd> the other one, <kbd>Space</kbd> plays and pauses, <kbd>[</kbd> and <kbd>]</kbd> set the loop.</p>
     ${b.verdict ? `<div class="reveal">
-        <p><strong>A was ${esc(b.order[0])}, B was ${esc(b.order[1])}.</strong> ${b.verdict === "same" ? "You heard no difference." : `You chose ${esc(b.verdict)}.`}</p>
-        <table class="figs num"><thead><tr><th></th><th>Loudness</th><th>Range</th><th>Limiter at work</th></tr></thead><tbody>
-          ${b.order.map((x, i) => `<tr><td>${"AB"[i]}: ${esc(x)}</td><td>${minus(r(x).lufs)} LUFS</td><td>${minus(r(x).lra_lu)} LU</td><td>${minus(r(x).limited_pct, 0)} % of the time</td></tr>`).join("")}</tbody></table>
+        <p><strong>A was ${esc(sideName(b.order[0]))}, B was ${esc(sideName(b.order[1]))}.</strong> ${b.verdict === "same" ? "You heard no difference." : `You chose ${esc(sideName(b.verdict))}.`}
+          ${Math.abs(r(b.order[0]).lufs - r(b.order[1]).lufs) > 0.3 ? `<span class="muted">The louder one was turned down ${minus(Math.abs(r(b.order[0]).lufs - r(b.order[1]).lufs))} dB, so that both played equally loud.</span>` : ""}</p>
+        <table class="figs num"><thead><tr><th></th><th>Loudness in the file</th><th>Range</th><th title="How far the highest peak stands over the loudness: the drum hits' punch">Peaks over the loudness</th><th>Limiter at work</th></tr></thead><tbody>
+          ${b.order.map((x, i) => `<tr><td>${"AB"[i]}: ${esc(sideName(x))}</td><td>${minus(r(x).lufs)} LUFS</td><td>${minus(r(x).lra)} LU</td>
+            <td>${r(x).plr != null ? `${minus(r(x).plr)} dB` : ""}</td><td>${r(x).limited == null ? "not limited" : `${minus(r(x).limited, 0)} % of the time`}</td></tr>`).join("")}</tbody></table>
         <button type="button" data-act="blind-again" title="A and B are drawn again; the song stops so that the change cannot be heard">Another round</button></div>`
       : `<div class="verdict">
         <input type="text" id="blind-note" maxlength="500" placeholder="What made the difference (optional)" value="${esc(b.note)}" aria-label="What made the difference">
@@ -1082,7 +1100,7 @@ function renderNew() {
         <ul class="found">${pv.takes.map((t) => `<li><span class="take-title">${esc(t.title)}</span><span class="muted num">${esc(t.date)} ${clock(t.seconds)}</span>
           <span class="tracks">${t.tracks.map((x) => `<span class="track">${esc(x)}</span>`).join("")}</span></li>`).join("")}</ul>`) : ""}</div>
       ${pv && !pv.error && !pv.has_settings ? `<div><div class="muted" style="font-size:.87rem;margin-bottom:.3rem">Master every take with</div>
-        <div class="chips">${["default", "simple_bass", "albini", "indie", "modern", "interpol"].map((x) => `<label class="chip"><input type="checkbox" data-act="tick-draft" data-profile="${x}" ${d.profiles.has(x) ? "checked" : ""}>${x}</label>`).join("")}</div></div>` : ""}
+        <div class="chips">${pv.profiles.map((x) => `<label class="chip"><input type="checkbox" data-act="tick-draft" data-profile="${esc(x)}" ${d.profiles.has(x) ? "checked" : ""}>${esc(x)}</label>`).join("")}</div></div>` : ""}
       <div class="row"><button type="button" data-act="create-project" ${pv && !pv.error ? "" : "disabled"}>Create project</button>
         <a class="button quiet" href="#/">Cancel</a><span class="error" id="new-error"></span></div>
     </div>`;
@@ -1115,7 +1133,7 @@ async function startJob(separateOnly) {
   try {
     const order = p.takes.map((t) => t.name).filter((n) => sel.takes.has(n));
     const profiles = p.profiles.map((x) => x.name).filter((n) => sel.profiles.has(n));
-    await api("POST", "/api/jobs", { project: p.id, takes: order, profiles, ab: sel.ab, separate_only: separateOnly });
+    await api("POST", "/api/jobs", { project: p.id, takes: order, profiles, ab: sel.ab, again: sel.again, separate_only: separateOnly });
     S.dismissed = 0;
     window.scrollTo({ top: 0, behavior: "smooth" });
     await poll();
@@ -1135,6 +1153,7 @@ const actions = {
   "tick-all": (el) => { S.sel[S.project.id].takes = new Set(el.checked ? S.project.takes.map((t) => t.name) : []); renderProject(); },
   "tick-profile": (el) => { const s = S.sel[S.project.id].profiles; el.checked ? s.add(el.dataset.profile) : s.delete(el.dataset.profile); renderProject(); },
   "tick-ab": (el) => { S.sel[S.project.id].ab = el.checked; },
+  "tick-again": (el) => { S.sel[S.project.id].again = el.checked; },
   remaster: () => startJob(false),
   separate: () => startJob(true),
   "cancel-job": async () => {
@@ -1185,7 +1204,7 @@ const actions = {
     const m = S.map;
     try {
       await api("POST", "/api/jobs", { project: S.project.id, takes: [m.take.name], profiles: [m.profile],
-        ab: m.nodes.some((n) => n.id === "master/ab") });
+        ab: m.nodes.some((n) => n.id === "master/ab"), again: true });  // asked for by name: made again whatever
       S.dismissed = 0;
       window.scrollTo({ top: 0, behavior: "smooth" });
       await poll();
@@ -1273,7 +1292,8 @@ const actions = {
   "tick-draft": (el) => { el.checked ? S.draft.profiles.add(el.dataset.profile) : S.draft.profiles.delete(el.dataset.profile); },
   "create-project": async () => {
     try {
-      const p = await api("POST", "/api/projects", { name: $("#new-name").value, folder: S.draft.folder, profiles: [...S.draft.profiles] });
+      const p = await api("POST", "/api/projects", { name: $("#new-name").value, folder: S.draft.folder,
+                                                    profiles: (S.preview.profiles || []).filter((x) => S.draft.profiles.has(x)) });
       S.draft = { name: "", folder: "", profiles: new Set(["default"]) };
       S.preview = S.browse = null;
       S.browsing = false;

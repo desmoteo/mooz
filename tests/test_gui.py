@@ -93,7 +93,7 @@ def _project(client: Client, folder: Path, name: str = "Rehearsal") -> dict:
 
 def _stand_in(script: str):
     """A job's command replaced by a script that prints what a run would."""
-    return lambda cfg_path, rooms, profiles, ab, separate_only: [sys.executable, "-c", script]
+    return lambda cfg_path, rooms, profiles, ab, separate_only, again=False: [sys.executable, "-c", script]
 
 
 def _wait(client: Client, until, seconds: float = 15.0) -> dict:
@@ -113,6 +113,8 @@ def test_a_project_is_made_from_a_folder_and_shows_its_takes(app, tmp_path):
     found = client.ok("GET", f"/api/preview?folder={rec}")
     assert [t["name"] for t in found["takes"]] == ["260928_231324_TrLR Vita", "261105_225442 Miramare"] and not found["has_settings"]
     assert not (rec / "rehearsal.toml").exists()  # looking writes nothing
+    assert found["profiles"][0] == "default" and found["profiles"][1:] == config.presets()  # every built-in one is offered
+    assert {"pro", "simple_bass", "albini"} <= set(found["profiles"])
 
     p = client.ok("POST", "/api/projects", {"name": "Rehearsal", "folder": str(rec), "profiles": ["default", "albini"]})
     cfg = config.load(rec / "rehearsal.toml")
@@ -216,6 +218,18 @@ def test_a_blind_comparisons_verdict_is_kept_with_the_project_and_counted_while_
     os.utime(report, (report.stat().st_atime, report.stat().st_mtime + 60))
     heard = client.ok("GET", f"/api/projects/{p['id']}")["listening"]
     assert [v["stale"] for v in heard["verdicts"]] == [True, True] and heard["pairs"] == []
+
+    # a master against the mix it was made from ("albini:mix": <take>_mix next to the master), once that file is there
+    side = {"take": take, "a": "albini:mix", "b": "albini", "choice": "albini:mix"}
+    assert client.call("POST", url, side)[0] == 400
+    _wav(folder / dirs["albini"] / f"{take}_mix.wav")
+    rep = json.loads(report.read_text())
+    report.write_text(json.dumps(rep | {"mix": {"integrated_lufs": -17.2, "lra_lu": 4.1, "plr_db": 16.2}}))
+    res = client.ok("GET", f"/api/projects/{p['id']}")["takes"][0]["results"]["albini"]
+    assert res["mix_lufs"] == -17.2 and res["files"]["mix_wav"].endswith("_mix.wav")
+    heard = client.ok("POST", url, side)
+    assert heard["verdicts"][0]["choice"] == "albini:mix" and not heard["verdicts"][0]["stale"]
+    assert heard["pairs"] == [{"profiles": ["albini", "albini:mix"], "rounds": 1, "wins": {"albini": 0, "albini:mix": 1}, "same": 0, "takes": 1}]
 
     # a file that is not ours to read is said, and left alone
     (folder / "listening.json").write_text("not json")
@@ -553,9 +567,9 @@ def test_a_job_is_checked_before_it_starts_and_says_why_a_run_died(app, tmp_path
     assert not seen
 
     client.ok("POST", "/api/jobs", {"project": p["id"], "takes": [take], "profiles": ["default", "albini"], "ab": True})
-    cfg_path, rooms, profs, ab, separate_only = seen[0]
+    cfg_path, rooms, profs, ab, separate_only, again = seen[0]
     assert cfg_path == rec / "rehearsal.toml" and rooms == [str(rec / take / "261105_225442_TrMic.WAV")]
-    assert (profs, ab, separate_only) == (["default", "albini"], True, False)
+    assert (profs, ab, separate_only, again) == (["default", "albini"], True, False, False)
     assert jobs.command(cfg_path, rooms, profs, ab, False)[3:] == [rooms[0], "-c", str(cfg_path), "--preset", "default",
                                                                    "--preset", "albini", "--ab"]
     job = _wait(client, lambda j: j["state"] != "running")
@@ -624,3 +638,103 @@ def test_the_command_line_says_where_it_is(tmp_path, monkeypatch, capsys):
     chains = [e["detail"] for e in events if e["ev"] == "stage" and e["key"] == "stems"]
     assert {"kick", "bass", "vocals"} <= set(chains)
     assert progress.fraction("read") == 0.0 and abs(progress.fraction("report", 1.0) - 1.0) < 1e-9
+
+
+STOPPED = r"""
+import json, sys
+def emit(**e):
+    print("@@" + json.dumps(e), flush=True)
+emit(ev="plan", units=[{"take": "A", "preset": ""}, {"take": "B", "preset": ""}, {"take": "C", "preset": ""}])
+emit(ev="unit", i=0)
+emit(ev="unit_done", i=0, ok=True, seconds=0.0, summary={"processed": {"integrated_lufs": -14.0}}, kept=True)
+emit(ev="unit", i=1)
+emit(ev="stage", key="stems", label="Stem chains", frac=0.4, detail="hihat")
+emit(ev="stopped", why="memory", limit="4G")
+sys.exit(137)
+"""
+
+
+def test_a_run_stopped_for_memory_says_so_and_a_take_left_as_it_is_is_marked(app, tmp_path):
+    """The system stops a run that needs too much memory with a kill, which leaves it no word to say; the process that
+    waits for it says it (cli._run_in_memory_scope), and the job passes it on."""
+    a, client = app
+    p = _project(client, tmp_path / "rec")
+    a.runner.make_command = _stand_in(STOPPED)
+    client.ok("POST", "/api/jobs", {"project": p["id"], "takes": ["261105_225442 Miramare"], "profiles": ["default"]})
+    job = _wait(client, lambda j: j["state"] != "running")
+    assert job["state"] == "failed" and "more memory than the 4G it may use" in job["message"] and "only the others" in job["message"]
+    assert [(u["state"], u["kept"]) for u in job["units"]] == [("done", True), ("failed", False), ("pending", False)]
+    assert job["units"][1]["error"] == "stopped here: it needed more memory than the 4G it may use"
+    # "also what is up to date" reaches the command line
+    assert jobs.command(tmp_path / "rehearsal.toml", ["a.wav"], ["default"], False, False, True)[-1] == "--again"
+    assert "--again" not in jobs.command(tmp_path / "rehearsal.toml", ["a.wav"], ["default"], True, False)
+
+
+def test_the_memory_a_run_may_use_goes_with_the_machine(monkeypatch):
+    monkeypatch.delenv("MOOZ_MEMORY_MAX", raising=False)
+    monkeypatch.delenv("REHEARSAL_MEMORY_MAX", raising=False)
+    limit = cli.memory_limit()
+    assert limit.endswith("G") and int(limit[:-1]) >= cli.MEMORY_FLOOR_GB
+    with open("/proc/meminfo") as f:
+        total_gb = next(int(line.split()[1]) for line in f if line.startswith("MemTotal:")) / 2 ** 20
+    assert int(limit[:-1]) <= max(cli.MEMORY_FLOOR_GB, total_gb / 2)  # never more than half of what there is
+    monkeypatch.setenv("REHEARSAL_MEMORY_MAX", "6G")
+    assert cli.memory_limit() == "6G"
+    monkeypatch.setenv("MOOZ_MEMORY_MAX", "off")
+    assert cli.memory_limit() == "off"
+
+
+def test_a_take_that_is_up_to_date_is_left_as_it_is_and_the_mix_is_written_next_to_the_master(tmp_path, monkeypatch, capsys):
+    """A run that stopped half-way goes on where it stopped: a take whose report says it was made with these settings,
+    recordings and program, and whose files are there, is not made again. And every master has its mix next to it."""
+    mix, stems = tp._song()
+    sf.write(tmp_path / tp.NAME, mix.astype(np.float32), tp.FS, subtype="FLOAT")
+    none = str(tmp_path / "no_samples")
+    settings = (f'[output]\nmp3 = false\n[track_defaults]\naugment = {{ library = {{ dir = "{none}" }} }}\n'
+                f'cymbal_augment = {{ dir = "{none}" }}\n')
+    (tmp_path / "rehearsal.toml").write_text(settings)
+    tp._fixture_separation(monkeypatch, mix, stems, config.load(None)["highpass"])
+    monkeypatch.setenv("REHEARSAL_PROGRESS", "1")
+    made = []
+    process = cli.pipeline.process_file
+    monkeypatch.setattr(cli.pipeline, "process_file", lambda *a, **k: (made.append(1), process(*a, **k))[1])
+    name, out = Path(tp.NAME).stem, tmp_path / "processed"
+
+    def run(*more) -> list[dict]:
+        cli.main([str(tmp_path / tp.NAME), *more])
+        return [json.loads(line[2:]) for line in capsys.readouterr().out.splitlines() if line.startswith(progress.PREFIX)]
+
+    first = [e for e in run() if e["ev"] == "unit_done"][0]
+    assert len(made) == 1 and "kept" not in first and first["peak_gb"] > 0
+    rep = json.loads((out / "reports" / f"{name}.json").read_text())
+    assert len(rep["made_with"]) == 24
+
+    # the mix: the stage before the master, at the one gain that puts its highest peak at the ceiling
+    master, fs = sf.read(out / f"{name}.wav", dtype="float64", always_2d=True)
+    exported, _ = sf.read(out / f"{name}_mix.wav", dtype="float64", always_2d=True)
+    staged, _ = sf.read(out / "stages" / name / "5_mix.flac", dtype="float64", always_2d=True)
+    assert rep["outputs"]["mix"].endswith("_mix.wav") and exported.shape == master.shape
+    assert abs(tp.loudness.true_peak_db(exported) - rep["processed"]["true_peak_dbtp"]) < 0.1  # both at the ceiling
+    k = slice(3 * fs, -2 * fs)  # away from the fades
+    gain = float(np.sum(exported[k] * staged[k]) / np.sum(staged[k] ** 2))
+    assert np.max(np.abs(exported[k] - gain * staged[k])) < 1e-4 * np.max(np.abs(exported[k]))  # nothing but a gain
+    assert rep["mix"]["plr_db"] >= rep["processed"]["plr_db"] - 0.05  # its peaks are whole: never less of them than the master
+    assert abs(rep["mix"]["integrated_lufs"] - tp.loudness.integrated(exported, fs)) < 0.1
+
+    again = [e for e in run() if e["ev"] == "unit_done"][0]  # nothing changed: left as it is
+    assert len(made) == 1 and again["kept"] and again["summary"]["processed"]["integrated_lufs"] == first["summary"]["processed"]["integrated_lufs"]
+    run("--again")  # asked for
+    assert len(made) == 2
+    (out / f"{name}_mix.wav").unlink()  # a file of its is gone
+    run()
+    assert len(made) == 3 and (out / f"{name}_mix.wav").exists()
+    run("--ab")  # an A/B file is asked for and there is none
+    assert len(made) == 4
+    run()  # with one there, a run that asks for none is content
+    assert len(made) == 4
+    (tmp_path / "rehearsal.toml").write_text(settings.replace("mp3 = false", "mp3 = false\nmix = false"))  # a setting changed
+    run()
+    assert len(made) == 5 and "mix" not in json.loads((out / "reports" / f"{name}.json").read_text())["outputs"]
+    os.utime(tmp_path / tp.NAME, None)  # the recording changed
+    run()
+    assert len(made) == 6

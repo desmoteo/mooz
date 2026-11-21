@@ -222,7 +222,8 @@ def preview(folder: str) -> dict:
         found = find_takes(cfg_path if exists else None, here)
     except (KeyError, TypeError, tomllib.TOMLDecodeError) as e:
         raise UserError(f"{cfg_path}: {_message(e)}") from None
-    return {"folder": str(here), "has_settings": exists, "takes": [_take_info(t) for t in found]}
+    return {"folder": str(here), "has_settings": exists, "takes": [_take_info(t) for t in found],
+            "profiles": [DEFAULT] + config.presets(cfg_path)}  # the built-in ones, and the folder's own
 
 
 def create(registry: Registry, name: str, folder: str, presets: list[str]) -> dict:
@@ -233,7 +234,7 @@ def create(registry: Registry, name: str, folder: str, presets: list[str]) -> di
     cfg_path = here.resolve() / "rehearsal.toml"
     if not cfg_path.exists():
         doc = tomlkit.parse(NEW_PROJECT)
-        doc["input"]["presets"] = _to_presets(presets or [DEFAULT], None)
+        doc["input"]["presets"] = _to_presets(presets or [DEFAULT], cfg_path)
         try:
             cfg_path.write_text(tomlkit.dumps(doc))
         except OSError as e:
@@ -297,7 +298,8 @@ def _result(take: takes.Take, out_dir: str) -> dict | None:
     base = take.root / out_dir
     report = base / "reports" / f"{take.name}.json"
     files = {kind: base / f"{take.name}{suffix}" for kind, suffix in
-             (("mp3", ".mp3"), ("wav", ".wav"), ("ab_mp3", "_AB.mp3"), ("ab_wav", "_AB.wav"))}
+             (("mp3", ".mp3"), ("wav", ".wav"), ("ab_mp3", "_AB.mp3"), ("ab_wav", "_AB.wav"),
+              ("mix_mp3", "_mix.mp3"), ("mix_wav", "_mix.wav"))}
     files |= {"figure": base / "reports" / f"{take.name}.png", "tracks_figure": base / "reports" / f"{take.name}_tracks.png"}
     files = {k: str(f.relative_to(take.root)) for k, f in files.items() if f.exists()}
     if not files and not report.exists():
@@ -309,6 +311,9 @@ def _result(take: takes.Take, out_dir: str) -> dict | None:
                 "true_peak_dbtp": rep["processed"]["true_peak_dbtp"], "original_lra_lu": rep["original"]["lra_lu"],
                 "limited_pct": rep["finalize"]["limiter"]["limited_pct"], "when": report.stat().st_mtime,
                 "trim_s": float((rep.get("trim") or {}).get("start_s") or 0.0)}
+        if "mix" in rep:  # the mix before the master step, written next to the master (<take>_mix)
+            out |= {"mix_lufs": rep["mix"]["integrated_lufs"], "mix_lra_lu": rep["mix"]["lra_lu"], "mix_plr_db": rep["mix"]["plr_db"]}
+        out["plr_db"] = rep["processed"].get("plr_db")
     except (OSError, KeyError, json.JSONDecodeError):
         pass
     return out

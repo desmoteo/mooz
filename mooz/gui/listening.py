@@ -1,7 +1,7 @@
 """What was heard: the verdicts of blind comparisons, kept with the project.
 
 The take's page plays two profiles' masters of a take as A and B without saying which is
-which; the choice is written to listening.json next to the settings file, where a later look
+which (or a master and the mix it was made from: "pro:mix" is the mix under profile pro); the choice is written to listening.json next to the settings file, where a later look
 at the settings (or another person) finds it:
 
   {"verdicts": [{"id": "19a6f0c2d11", "at": "2026-11-11T10:02:11", "take": "261105_225442 Miramare",
@@ -25,6 +25,15 @@ from .projects import UserError, _replace
 FILE = "listening.json"
 SAME = "same"
 NOTE_MAX = 500
+MIX = ":mix"  # after a profile's name: its mix before the master step (<take>_mix), not its master
+
+
+def _when(results: dict, side: str) -> float | None:
+    """When the file a side stands for was made (None: it is not there)."""
+    r = results.get(side.removesuffix(MIX))
+    if not r or (side.endswith(MIX) and not (r["files"].get("mix_wav") or r["files"].get("mix_mp3"))):
+        return None
+    return r.get("when")
 
 
 def _read(cfg_path: Path) -> list[dict]:
@@ -45,12 +54,12 @@ def _write(cfg_path: Path, verdicts: list[dict]) -> None:
 def view(cfg_path: Path, takes: list[dict]) -> dict:
     """The verdicts, newest first, each marked stale if one of its masters was made again since
     (or is gone); and per pair of profiles what the others add up to."""
-    made = {t["name"]: {p: r.get("when") for p, r in t["results"].items()} for t in takes}
+    results = {t["name"]: t["results"] for t in takes}
     out, pairs = [], {}
     for v in reversed(_read(cfg_path)):
-        now, was = made.get(v["take"], {}), v.get("masters") or {}
+        now, was = {p: _when(results.get(v["take"], {}), p) for p in (v["a"], v["b"])}, v.get("masters") or {}
         stale = v["choice"] not in (v["a"], v["b"], SAME) or any(
-            now.get(p) is None or abs(now[p] - (was.get(p) or 0)) > 1.0 for p in (v["a"], v["b"]))
+            now[p] is None or abs(now[p] - (was.get(p) or 0)) > 1.0 for p in (v["a"], v["b"]))
         out.append(v | {"stale": stale})
         if stale:
             continue
@@ -73,7 +82,7 @@ def add(cfg_path: Path, body: dict, takes: list[dict]) -> None:
     if take is None:
         raise UserError("That take is not in the project any more. Reload the page.")
     a, b, choice = body.get("a"), body.get("b"), body.get("choice")
-    if a == b or any(p not in take["results"] or take["results"][p].get("when") is None for p in (a, b)):
+    if a == b or not all(isinstance(p, str) and _when(take["results"], p) is not None for p in (a, b)):
         raise UserError("A comparison needs two profiles that both have a master of this take.")
     if choice not in (a, b, SAME):
         raise UserError("The choice is one of the two profiles, or no difference.")
@@ -86,7 +95,7 @@ def add(cfg_path: Path, body: dict, takes: list[dict]) -> None:
     verdicts = _read(cfg_path)
     verdicts.append({"id": f"{time.time_ns() // 1_000_000:x}", "at": time.strftime("%Y-%m-%dT%H:%M:%S"), "take": take["name"],
                      "a": a, "b": b, "choice": choice, "note": str(body.get("note") or "").strip()[:NOTE_MAX], "loop_s": loop,
-                     "masters": {p: take["results"][p]["when"] for p in (a, b)}})
+                     "masters": {p: _when(take["results"], p) for p in (a, b)}})
     _write(cfg_path, verdicts)
 
 

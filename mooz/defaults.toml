@@ -1008,6 +1008,9 @@ report = true              # PNG + JSON per song in <dir>/reports
 artist = ""
 album = "Rehearsal {date}"
 ab_segment_s = 10.0        # --ab: switch between original and processed every N seconds
+mix = true                 # also <song>_mix.wav (and .mp3): the mix as it is before the master step, with the one gain
+                           # that puts its highest peak at the ceiling. Nothing clipped or limited: all its punch, and
+                           # quieter than the master by what the master step takes off the peaks
 
 [chains]                   # each stem's chain kept from run to run (chaincache.py): a change to the bus, the balance, the
 enabled = true             # loudness or another stem's chain does not run this stem's chain again (two thirds of a take's

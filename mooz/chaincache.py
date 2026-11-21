@@ -38,7 +38,9 @@ import scipy
 import soundfile as sf
 
 # Modules that only read settings, report or write files: a change to them leaves every kept chain valid.
-_NOT_SOUND = {"cli.py", "report.py", "export.py", "progress.py"}
+# pipeline.py is the stage order, of which only the part that makes the chains counts: it names those
+# functions itself (uses), so work on the mix bus, the master and the files written keeps the chains.
+_NOT_SOUND = {"cli.py", "report.py", "export.py", "progress.py", "pipeline.py"}
 _ND = "__nd__"
 
 
@@ -53,12 +55,22 @@ def _code() -> str:
 
 
 # Read when the run starts, with the modules themselves: what a run keeps is named after the code it runs.
-_CODE = _code()
+_MODULES = _code()
+_USED: list[str] = []
+
+
+def uses(function):
+    """Named by pipeline.py as it loads: this function of its is part of what makes a chain (its
+    source goes into the code's name). Returns the function, to be used as a decorator."""
+    import inspect
+
+    _USED.append(inspect.getsource(function))
+    return function
 
 
 def code() -> str:
     """One name for the code that makes a chain: a change to any of it and nothing kept is used."""
-    return _CODE
+    return hashlib.blake2b((_MODULES + "".join(sorted(_USED))).encode(), digest_size=8).hexdigest()
 
 
 def _digest(data: bytes) -> str:

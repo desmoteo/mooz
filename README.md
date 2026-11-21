@@ -30,9 +30,11 @@ uv run mooz --preset albini       # Steve Albini-style mix -> processed/albini/
 uv run mooz --preset indie        # gritty indie / garage rock -> processed/indie/
 uv run mooz --preset modern       # modern pop-rock, radio-ready -> processed/modern/
 uv run mooz --preset interpol     # dark post-punk, Interpol-like -> processed/interpol/
+uv run mooz --preset pro          # the mix and master reassessed -> processed/pro/
 uv run mooz --target -16          # loudness target (LUFS)
 uv run mooz --analyze             # measure only, write nothing
 uv run mooz --no-chain-cache      # run every stem's chain again (they are kept from run to run otherwise)
+uv run mooz --again               # master again also the takes that are up to date
 uv run mooz --learn-balance       # print level targets learnt from all songs
 ```
 
@@ -54,7 +56,14 @@ uv run --with remotezip --with requests python tools/build_drum_samples.py
 ```
 
 The first run of a song separates it (about 6–7 min on the GPU, cached afterwards); processing
-takes about 4 min per song. The run is memory-capped (`REHEARSAL_MEMORY_MAX`, default 4G).
+takes about 4 min per song. A take that is already mastered with the same settings, recordings and
+program is left as it is, so a run that stopped half-way goes on where it stopped (`--again` makes
+those again too).
+
+The run is memory-capped, so that a take too long for the machine stops the run and not the desktop.
+The limit is what the machine can spare when the run starts: four fifths of the free memory, at most
+half of all of it, at least 4G (`MOOZ_MEMORY_MAX=24G` sets it, `off` removes it). A take needs
+about 1.3 GB plus 0.5 GB per minute. A run stopped for memory says so.
 
 ## Recordings
 
@@ -84,6 +93,7 @@ In `processed/full/` and `processed/simple_bass/` (or the preset's folder), for 
 | file | what |
 |---|---|
 | `<name>.wav` / `.mp3` | the master: 24-bit WAV and a 320 kbps MP3 tagged with title and date |
+| `<name>_mix.wav` / `.mp3` | the mix before the master step, with the one gain that puts its highest peak at the ceiling: nothing clipped or limited, so all its punch, and quieter than the master by what that step takes off the peaks (2.5–4.5 dB); `[output] mix = false` leaves it out |
 | `<name>_AB.wav` / `.mp3` | with `--ab`: original ↔ master every 10 s (original first: the recorder's mix-down if it wrote one), at the same loudness |
 | `reports/<name>.png` | the mix stages: spectrum before/after, EQ, loudness over time, gain reduction |
 | `reports/<name>_tracks.png` | every stem: level in the remix, spectrum, EQ, its dynamics over time |
@@ -143,6 +153,12 @@ In `processed/full/` and `processed/simple_bass/` (or the preset's folder), for 
 - **simple_bass**: the same mix with a much shorter bass chain, to compare with the full one:
   expander, EQ with tone match, compressor, fundamental restore and kick duck; no harmonic
   clean-up, resonance suppressor, transient shaper, saturator, exciter or enhancer.
+
+- **pro**: the default with its mix and master steps reassessed, for a more professional sound:
+  half the bus compression (more of the loudness range kept), drum hits clipped instead of
+  limited, the voice up against the drums, 2 dB more low-end boost allowed, and the bass's
+  fundamentals brought up to their second harmonic. Measured on 8 takes; not judged by ear yet
+  ([docs/PLAN.md](docs/PLAN.md), "Mix and master, reassessed").
 
 - **albini**: Steve Albini's approach: the band in a room, as it played. The rehearsal room's
   defects are still fixed (hum, buzz, levels); the polish is dropped: no bus compression or
@@ -253,6 +269,6 @@ Background reading, with how this pipeline compares: [docs/RESEARCH.md](docs/RES
 ## Development
 
 ```sh
-uv run pytest          # 103 checks, about 2 min: DSP, settings, takes and close tracks, the pipeline end to end, the web app, the separation library's internals
+uv run pytest          # 106 checks, about 2 min: DSP, settings, takes and close tracks, the pipeline end to end, the web app, the separation library's internals
 uv run --with remotezip --with requests python tools/build_raw_references.py   # rebuild the raw-track references
 ```

@@ -87,7 +87,7 @@ class App:
                 if other != n:
                     raise UserError(f"{other} and {n} both write to {known[n]['output_dir']}: the second would overwrite the "
                                     "first. Run them one at a time, or give one its own [output] dir.")
-        job = self.runner.start(d, chosen, names, bool(body.get("ab")), separate_only)
+        job = self.runner.start(d, chosen, names, bool(body.get("ab")), separate_only, bool(body.get("again")))
         return {"job": job.snapshot()}
 
 

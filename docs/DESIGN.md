@@ -678,6 +678,11 @@ flowchart LR
 Presets:
 - **simple_bass**: the same mix with the bass on expander, EQ with tone match, compressor,
   fundamental restore and kick duck only, to compare with the full chain.
+- **pro**: the default's mix and master reassessed (10 November 2026): bus compression halved
+  (`glue.target_gr_db` 0.6), the clipper taking the drum hits before the limiter
+  (`clipper.headroom_db` 0.5), the balance half-way to what mix engineers do
+  (`balance.prior_weight` 0.5), 5 dB of bus-EQ boost allowed, the bass's fundamentals at the
+  level of their second harmonic. Measured, not judged by ear yet ([PLAN.md](PLAN.md)).
 - **albini**: Steve Albini's approach. The room and its dynamics kept; no bus compression
   or clipper, no transient shaping, no samples, no added reverb or fader riding; dry loud
   guitars, compressed raw vocals, tape; −18 LUFS.
@@ -721,6 +726,8 @@ Presets:
 ```
 processed/<preset dir>/
   <song>.wav / .mp3                 master
+  <song>_mix.wav / .mp3             the mix before the master step (stage 5 after the bus), faded like the master and
+                                    at the one gain that puts its highest peak at the ceiling; nothing clipped or limited
   <song>_AB.wav / .mp3              original ↔ master, equal loudness, every 10 s
   reports/<song>.png / _tracks.png  mix stages / per-stem stages (spectra, EQ, gain traces)
   reports/<song>.json               every measurement and decision
@@ -744,7 +751,7 @@ processed/stems_ensemble_merged/<settings>/<take>/  the stems with the close tra
 
 | module | responsibility |
 |---|---|
-| `cli.py` | arguments, file collection, memory-capped scope, summaries, `--learn-balance` |
+| `cli.py` | arguments, file collection, the memory-capped scope and what is said when it stops a run, takes that are up to date left as they are, summaries, `--learn-balance` |
 | `progress.py` | where a run is: one JSON event per line for a front end, only with `REHEARSAL_PROGRESS` set; the stages' shares of a take's time |
 | `gui/` | the web app ([GUI.md](GUI.md)): a local server over the command line, the list of projects, the settings and profile forms, the job and its progress, a take's files along the pipeline for listening (`gui/stagemap.py`), two profiles' masters compared blind and the verdicts (`gui/listening.py`) |
 | `config.py` | layered, validated settings; track inheritance |
@@ -782,10 +789,29 @@ change to the bus, the balance or the master then takes a third of the time (Mir
 November 2026: 336 s with nothing kept, 112 s with all nine chains kept, the same file byte for
 byte), a change to one stem's chain that plus the one chain. The kept chains take about 1.3 GB
 per song, shared by all presets; `[chains] enabled = false` or `--no-chain-cache` turns them off.
+The code that names a kept chain is every module but the command line, the figures, the file
+export and the progress events, and of `pipeline.py` only the functions that make a chain
+(`@chaincache.uses`): work on the bus, the master or the files written keeps the chains.
+
+Memory: about 1.3 GB plus 0.5 GB per minute of take at the highest point, which is in the stem
+chains (a take of 5:40: 4.1 GB in the hi-hat's chain, 4.0 in the bass's; with every chain kept 3.7 GB,
+in the blend and the bus). A run works inside a memory-capped systemd scope so that a take too
+long for the machine stops the run and not the desktop. The cap is what the machine can spare when
+the run starts (four fifths of the free memory, at most half of all, at least 4G;
+`MOOZ_MEMORY_MAX`). The system stops such a run with a kill, which leaves it no word to say, so
+the process that waits for it says it (and tells a front end: the progress event `stopped`).
+
+A take is up to date when its report carries the name of what it was made with (`made_with`: the
+program's source, the take's resolved settings, the recorder's files by name, size and time) and
+every file the report names is there. Such a take is not made again unless `--again` asks: a run
+that stopped goes on where it stopped. The stems of the separation are a cache of their own
+(the recording by name, size and time, the filters before it, the plan's models): `--again` uses
+them. What the other takes bring (the tone targets are medians over
+all of them) is not in that name.
 
 ## 9. Tests
 
-`uv run pytest` (103 checks): K-weighting and loudness of a reference sine, compressor
+`uv run pytest` (106 checks): K-weighting and loudness of a reference sine, compressor
 release, exact band reconstruction, limiter ceiling, mono bass, FIR accuracy, every effect on
 synthetic signals (de-esser, resonances, transients, bass enhancer, saturator, gates, ducks),
 pan split (and that it runs outside the separation cache), chunked separation, hum, expander
@@ -815,8 +841,11 @@ burst is keyed on the snare stem.
 keeping the file's comments, nothing saved that does not load, a project's own profile, a built-in one
 edited as the project's version, a take's files laid out along the pipeline, a job followed through its
 events and cancelled, files served only from inside the project, other sites refused, a blind
-comparison's verdicts kept, counted and no longer counted once a master is made again), and a
-real run with two presets whose progress events are checked.
+comparison's verdicts kept, counted and no longer counted once a master is made again, a run
+stopped for memory said as such, the memory limit going with the machine), a
+real run with two presets whose progress events are checked, and one whose take is then up to
+date and left as it is until a setting, a file of its own or the recording changes, with the mix
+written next to the master as nothing but a gain on the stage before it.
 
 ## 10. Other tools considered
 

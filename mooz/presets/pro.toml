@@ -1,0 +1,24 @@
+# The mix and the master reassessed for a more professional sound: more of the loudness range kept,
+# drum hits clipped instead of limited, the voice up against the drums, more low end allowed, a
+# fuller bass. Each change answers something measured on the 8 takes of 5 November 2026
+# (docs/PLAN.md, "Mix and master, reassessed"); none is judged by ear yet.
+#
+# Written to processed/pro/:  uv run mooz --preset pro
+
+[output]
+dir = "processed/pro"
+
+[glue]                     # the bus compressor took 0.7-1.3 LU of the loudness range: it worked 3.5-4.7 dB on the
+target_gr_db = 0.6         # loud sections and not at all on the quiet ones. Half of it: 2.4-3.4 dB at most
+
+[clipper]                  # the drum hits' last 3-5 dB: clipped (under 1 ms each) instead of limited (the whole mix
+headroom_db = 0.5          # ducked for a tenth of a second after each hit). The limiter is left under 1.2 dB
+
+[balance]                  # the voice 1.1 dB up and the drums 0.9 dB down against the rehearsal room's balance,
+prior_weight = 0.5         # half-way to what mix engineers do (was 0.3: the voice 2.2 dB under the drums)
+
+[eq]                       # the 63 Hz octave is 7-9 dB under the next one in every take, and the bus EQ's boost
+max_boost_db = 5.0         # there stopped at its limit of 3 dB on all 8: 2 dB more allowed
+
+[tracks.bass]              # a note's fundamental brought to the level of its second harmonic, as on raw studio
+bass_fundamental = { restore_db = 0.0 }  # bass tracks (was 3 dB under); the close track's bass is thin there
