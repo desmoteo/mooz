@@ -56,11 +56,11 @@ def _wow(x: np.ndarray, fs: float, depth_ms: float, rate_hz: float, seed: int) -
     mod = depth_ms / 1000 * fs * (np.sin(2 * np.pi * rate_hz * t + rng.uniform(0, 6.3))
                                   + 0.3 * np.sin(2 * np.pi * 5.1 * rate_hz * t))
     pos = np.clip(np.arange(len(x)) - depth_ms / 1000 * fs * 1.3 + mod, 0, len(x) - 1)
-    return np.column_stack([np.interp(pos, np.arange(len(x)), x[:, c]) for c in range(x.shape[1])])
+    return np.column_stack([np.interp(pos, np.arange(len(x)), x[:, c]) for c in range(x.shape[1])]).astype(x.dtype, copy=False)
 
 
 def _delay(x: np.ndarray, d: int) -> np.ndarray:
-    return np.concatenate([np.zeros((d, x.shape[1])), x[: len(x) - d]]) if d > 0 else x
+    return np.concatenate([np.zeros((d, x.shape[1]), x.dtype), x[: len(x) - d]]) if d > 0 else x
 
 
 def delay_ms_of(cfg: dict, tempo_bpm: float | None) -> float:
@@ -76,7 +76,7 @@ def send(x: np.ndarray, fs: float, cfg: dict, tempo_bpm: float | None = None) ->
     kind = cfg["type"]
     src = _bands(x, fs, cfg.get("hp_hz", 200.0), cfg.get("lp_hz", 8000.0))
     if kind in ("plate", "room"):
-        ir = reverb_ir(fs, cfg["rt60_s"], cfg.get("predelay_ms", 10.0), cfg.get("damping", 0.5))
+        ir = reverb_ir(fs, cfg["rt60_s"], cfg.get("predelay_ms", 10.0), cfg.get("damping", 0.5)).astype(x.dtype, copy=False)
         wet = np.column_stack([signal.oaconvolve(src[:, 0], ir[:, 0])[: len(x)],
                                signal.oaconvolve(src[:, 1 % src.shape[1]], ir[:, 1])[: len(x)]])
     elif kind == "slap":
@@ -100,7 +100,7 @@ def send(x: np.ndarray, fs: float, cfg: dict, tempo_bpm: float | None = None) ->
         # left and right (ping_pong) or in place
         d = int(delay_ms_of(cfg, tempo_bpm) / 1000 * fs)
         mono = src.mean(axis=1, keepdims=True)
-        rep, wet = mono, np.zeros((len(x), 2))
+        rep, wet = mono, np.zeros((len(x), 2), x.dtype)
         for k in range(cfg.get("repeats", 5)):
             rep = _delay(rep, d) * (cfg["feedback"] if k else 1.0)
             if k:
@@ -109,7 +109,7 @@ def send(x: np.ndarray, fs: float, cfg: dict, tempo_bpm: float | None = None) ->
                 side = (1.0, 0.25) if k % 2 == 0 else (0.25, 1.0)
             else:
                 side = (1.0, 1.0)
-            wet += rep * np.array(side)[None, :]
+            wet += rep * np.array(side, x.dtype)[None, :]
     elif kind == "chorus":
         # micro-pitch doubling: two copies on slowly modulated delays (a few cents up and down),
         # one hard left, one hard right, under the dry voice: wider and bigger, not further away
@@ -128,7 +128,7 @@ def send(x: np.ndarray, fs: float, cfg: dict, tempo_bpm: float | None = None) ->
     st = {"type": kind, "level_lu": cfg["level_lu"]}
     if kind in ("delay", "tape_echo", "slap"):
         st["delay_ms"] = round(delay_ms_of(cfg, tempo_bpm) if kind == "delay" else cfg["delay_ms"], 0)
-    return wet * gain, st
+    return (wet * gain).astype(x.dtype, copy=False), st
 
 
 def sends(x: np.ndarray, fs: float, cfgs: list[dict], tempo_bpm: float | None = None

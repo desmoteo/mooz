@@ -19,7 +19,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from . import jobs, listening, projects, stagemap
+from . import jobs, listening, live, projects, stagemap
 from .projects import UserError
 
 STATIC = Path(__file__).with_name("static")
@@ -61,8 +61,35 @@ class App:
     def state(self, query: dict) -> dict:
         job = self.runner.job
         since = int(query["since"]) if query.get("since", "").isdigit() else 0
-        return {"projects": self.registry.list(), "job": job.snapshot(since) if job else None,
-                "home": str(Path.home())}
+        snap = job.snapshot(since) if job else None
+        if snap:
+            snap["live"] = self._live(job, snap)
+        return {"projects": self.registry.list(), "job": snap, "home": str(Path.home())}
+
+    def _live(self, job: jobs.Job, snap: dict, graph: bool = False) -> dict | None:
+        """The take the job is at, on its graph (live.py): which take and profile, and where each box
+        is; with graph, the graph itself (asked for once a take: it does not change while it is made)."""
+        units = snap["units"]
+        unit = units[snap["current"]] if snap["current"] is not None else None
+        if unit is None and snap["state"] != "running" and units:  # a job that is over: where its last take got to
+            unit = next((u for u in reversed(units) if u["state"] != "pending"), None)
+        if unit is not None:
+            take, profile = unit["take"], unit["profile"]
+        elif snap["state"] == "running" and snap["ahead"] and units:  # the stems of every take first: this one's
+            take, profile = snap["ahead"]["take"], units[0]["profile"]
+        else:
+            return None
+        key = f"{take}\n{profile}"
+        plans = job.__dict__.setdefault("plans", {})
+        if key not in plans:
+            try:
+                plans[key] = live.plan(self.cfg_path(job.project["id"]), take, profile, snap["separate_only"])
+            except (UserError, OSError, KeyError, ValueError):
+                plans[key] = None  # a project that is gone, settings that do not load: no graph, the rest of the page as ever
+        if plans[key] is None:
+            return None
+        out = {"key": key, "take": take, "profile": profile, "states": live.states(plans[key], take, unit, snap["separated"])}
+        return out | ({"graph": plans[key]} if graph else {})
 
     def start_job(self, body: dict) -> dict:
         pid = body.get("project", "")
@@ -87,7 +114,8 @@ class App:
                 if other != n:
                     raise UserError(f"{other} and {n} both write to {known[n]['output_dir']}: the second would overwrite the "
                                     "first. Run them one at a time, or give one its own [output] dir.")
-        job = self.runner.start(d, chosen, names, bool(body.get("ab")), separate_only, bool(body.get("again")))
+        job = self.runner.start(d, chosen, names, bool(body.get("ab")), separate_only, bool(body.get("again")),
+                                bool(body.get("separate_again")))
         return {"job": job.snapshot()}
 
 
@@ -187,6 +215,9 @@ class Handler(BaseHTTPRequestHandler):
                 self._file(projects.served_file(app.roots(pid), int(root), "/".join(rel)))
             case ["api", "state"]:
                 self._json(app.state(query))
+            case ["api", "live"]:  # the take the job is at, with its graph
+                job = app.runner.job
+                self._json({"live": app._live(job, job.snapshot(10 ** 9), graph=True) if job else None})
             case ["api", "browse"]:
                 self._json(projects.browse(query.get("path")))
             case ["api", "preview"]:

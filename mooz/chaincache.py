@@ -183,6 +183,16 @@ class Chains:
             pass
         return out
 
+    def has(self, stem: str, key: str) -> bool:
+        """Whether load() would find this chain: its files are all there. Nothing is read or marked used."""
+        d = self.root / stem / key
+        try:
+            m = json.loads((d / "meta.json").read_text())
+            files = [d / "data.npz", d / "proc.wav", *(d / "stages" / f for f in m["stages"].values())]
+            return all(f.exists() for f in files + ([d / "taken.wav"] if m["taken"] else []))
+        except (OSError, ValueError, KeyError, TypeError):
+            return False
+
     def load(self, stem: str, key: str, work: Path) -> Kept | None:
         """The stem's chain under key, if it is kept: its processed file linked into work, the
         rest in memory, so nothing here depends on the kept files afterwards."""

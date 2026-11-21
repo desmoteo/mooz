@@ -9,6 +9,8 @@ dependencies = [
     "soundfile>=0.12",
     "matplotlib>=3.8",
     "librosa>=0.10",       # pitch tracking and note onsets of the bass (augment.py, note_eq.py)
+    "numba>=0.59",         # the envelope follower's loop (dynamics.py); librosa brings it in too
+    "numexpr>=2.8",        # element-wise mathematics on whole signals, on threads (expr.py)
     "tomlkit>=0.13",       # the web app rewrites rehearsal.toml and keeps its comments (gui/projects.py)
 ]
 

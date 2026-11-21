@@ -8,16 +8,27 @@
   input: each stem is then the weighted average of the models that produce it (an
   ensemble). Every model's own outputs are kept in <cache>/models/ for listening.
 
-Separation runs in a subprocess (memory is released before the rest of the
-pipeline runs) and the stems are cached as float WAVs in
+Separation runs in a process of its own (its memory is released before the rest of
+the pipeline runs) and the stems are cached as float WAVs in
 <output dir>/stems/<song>/, reused while you tune the rest of the chain. They are
 also handy for remixing in a DAW.
+
+That process stays for as long as there is something to separate, and takes one source
+after another (a take's room track, its close tracks, the next take's): its models stay
+loaded, each in a separator of its own, and their repeated blocks compiled ([stems]
+compile: twice as fast). A model was loaded for every source before, 13 times for a take
+with a close track, and compiling at each load would have eaten the gain. The code it
+compiles is kept on disk (COMPILED_DIR), so a later run compiles in half the time.
+release() ends the process: the pipeline calls it before the stem chains, which want
+the memory.
 """
 
 from __future__ import annotations
 
+import atexit
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -35,6 +46,8 @@ from . import progress
 CHUNK_S = 60.0  # seconds per model call
 OVERLAP_S = 5.0  # crossfaded between consecutive chunks
 MODEL_DIR = Path.home() / ".cache" / "mooz" / "models"
+COMPILED_DIR = Path.home() / ".cache" / "mooz" / "compiled"  # what torch.compile makes of the models' blocks (TORCHINDUCTOR_CACHE_DIR)
+GPU_ROOM_GB = 2.0  # free memory wanted on the card before one more model is loaded next to the others
 
 
 def available(backend: str = "demucs") -> bool:
@@ -136,10 +149,15 @@ def _stems_in(cache_dir: Path) -> dict[str, Path]:
     return {f.stem: f for f in sorted(cache_dir.glob("*.wav")) if not f.stem.startswith("_")}
 
 
+AGAIN = False  # --separate-again: kept stems are not used, every source is separated once more (once a run)
+_made: set[str] = set()  # the caches this run has made: those it uses, also with AGAIN (a second profile, the take's own turn)
+
+
 def separate(x: np.ndarray, fs: int, cfg: dict, cache_dir: Path, key: dict) -> dict[str, Path]:
     """Stem files for x (same length, rate and channels), from cache when key matches."""
     meta = cache_dir / "key.json"
-    if cfg["cache"] and meta.exists() and json.loads(meta.read_text()) == key:
+    asked_again = AGAIN and str(cache_dir.resolve()) not in _made
+    if cfg["cache"] and not asked_again and meta.exists() and json.loads(meta.read_text()) == key:
         stems = _stems_in(cache_dir)
         if stems and all(sf.info(f).frames == len(x) for f in stems.values()):
             print("  stems: using cache", file=sys.stderr)
@@ -157,13 +175,160 @@ def separate(x: np.ndarray, fs: int, cfg: dict, cache_dir: Path, key: dict) -> d
     sf.write(inp, x.astype(np.float32), fs, subtype="FLOAT")
     job.write_text(json.dumps({"input": str(inp), "out_dir": str(cache_dir), "cfg": cfg}))
     try:
-        subprocess.run([sys.executable, "-m", "mooz.separate", str(job)], check=True)
+        _ask(job)
     finally:
         inp.unlink(missing_ok=True)
         job.unlink(missing_ok=True)
     meta.write_text(json.dumps(key))
+    _made.add(str(cache_dir.resolve()))
     progress.emit("separation", track=cache_dir.name, state="done")
     return _stems_in(cache_dir)
+
+
+# --- the process that separates ----------------------------------------------------------------
+# One for the whole run: asked for one source after another over its standard input (a job file's
+# path per line), answering on a pipe of its own, since its standard output carries the progress
+# events and its standard error what it prints. A job that fails ends it (its GPU may not be in a
+# state to go on); the next source starts another.
+
+_server: dict | None = None
+
+
+def _ask(job: Path) -> None:
+    """Have the separating process do this job (started if there is none); raises as a failed
+    subprocess does if the job fails or the process is gone."""
+    global _server
+    if _server is None or _server["proc"].poll() is not None:
+        release()
+        back, forth = os.pipe()
+        env = os.environ | ({} if "TORCHINDUCTOR_CACHE_DIR" in os.environ else {"TORCHINDUCTOR_CACHE_DIR": str(COMPILED_DIR)})
+        cmd = [sys.executable, "-m", "mooz.separate", "--serve", str(forth)]
+        proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, pass_fds=(forth,), env=env, text=True)
+        os.close(forth)
+        _server = {"proc": proc, "answers": os.fdopen(back, "r"), "cmd": cmd}
+    proc = _server["proc"]
+    try:
+        proc.stdin.write(f"{job}\n")
+        proc.stdin.flush()
+        answer = _server["answers"].readline().strip()
+    except (BrokenPipeError, OSError, ValueError):
+        answer = ""
+    if answer != "ok":  # it said so on its standard error; it has ended, or is ending
+        cmd = _server["cmd"]
+        try:
+            code = proc.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            code = proc.wait()
+        release()
+        raise subprocess.CalledProcessError(code or 1, cmd)
+
+
+def release() -> None:
+    """End the separating process, if there is one: its models and the memory they hold go with
+    it. Nothing is lost but the time to load them again."""
+    global _server
+    if _server is None:
+        return
+    server, _server = _server, None
+    proc = server["proc"]
+    try:
+        proc.stdin.close()  # no more jobs: it ends when it has read this
+    except OSError:
+        pass
+    try:
+        proc.wait(timeout=60)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+    server["answers"].close()
+
+
+atexit.register(release)
+
+
+def _serve(answers_fd: int) -> None:
+    """In the separating process: one job per line of standard input, until it closes."""
+    import traceback
+
+    if sys.platform.startswith("linux"):  # it goes when the run goes, however the run goes
+        try:
+            import ctypes
+            import signal as signals
+
+            ctypes.CDLL("libc.so.6").prctl(1, signals.SIGTERM)  # PR_SET_PDEATHSIG
+        except OSError:
+            pass
+    answers = os.fdopen(answers_fd, "w")
+    models = _Models()
+    for line in sys.stdin:
+        if not line.strip():
+            continue
+        try:
+            job = json.loads(Path(line.strip()).read_text())
+            if job["cfg"]["backend"] == "roformer":
+                _worker_roformer(Path(job["input"]), Path(job["out_dir"]), job["cfg"], models)
+            else:
+                models.clear()  # (the other backend wants the card to itself)
+                _worker_demucs(Path(job["input"]), Path(job["out_dir"]), job["cfg"])
+        except BaseException:
+            traceback.print_exc()
+            answers.write("failed\n")
+            answers.flush()
+            sys.exit(1)
+        answers.write("ok\n")
+        answers.flush()
+
+
+class _Models:
+    """The models this process has loaded, each in a separator of its own, the last used last."""
+
+    def __init__(self) -> None:
+        self.loaded: dict[tuple, object] = {}
+
+    def clear(self) -> None:
+        import gc
+
+        import torch
+
+        self.loaded.clear()
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    def get(self, m: dict, cfg: dict, out: Path, sr: int):
+        """The separator with model m loaded as the step asks, writing to out. Loaded at its first
+        use and kept; the least recently used ones go when the card has less than GPU_ROOM_GB free
+        for a new one (on the CPU, where a model is in main memory, only the last one stays)."""
+        import gc
+        import logging
+
+        import torch
+        from audio_separator.separator import Separator
+
+        on_gpu = cfg["device"] != "cpu" and torch.cuda.is_available()
+        compiled = bool(cfg.get("compile", True)) and on_gpu
+        # segment_size (STFT frames): shorter model windows than its config's, for models too big
+        # for the GPU at their own (e.g. 53 stems at 20 s); the separator is told at load time
+        # pitch_shift (semitones): the input is shifted down by this much before the model and the
+        # outputs back up (UVR's "pitch change"), e.g. as a second pass to average with the first
+        key = (m["model"], m.get("segment_size", 256), "segment_size" in m, m.get("pitch_shift", 0), cfg["device"], compiled)
+        sep = self.loaded.pop(key, None)
+        out.mkdir(parents=True, exist_ok=True)
+        if sep is None:
+            while self.loaded and (not on_gpu or torch.cuda.mem_get_info()[0] < GPU_ROOM_GB * 2 ** 30):
+                del self.loaded[next(iter(self.loaded))]
+                gc.collect()
+                if on_gpu:
+                    torch.cuda.empty_cache()
+            sep = Separator(log_level=logging.ERROR, model_file_dir=str(MODEL_DIR), output_dir=str(out), output_format="WAV",
+                            use_soundfile=True, sample_rate=sr, use_autocast=cfg["device"] != "cpu", use_torch_compile=compiled,
+                            normalization_threshold=1.0, amplification_threshold=0.0)
+            sep.arch_specific_params["MDXC"].update(segment_size=key[1], override_model_segment_size=key[2], pitch_shift=key[3])
+            _load(sep, m["model"], cfg.get("custom_models", {}))
+        self.loaded[key] = sep
+        sep.output_dir = sep.model_instance.output_dir = str(out)  # this job's folder
+        return sep
 
 
 # --- Demucs ---------------------------------------------------------------------------------
@@ -388,16 +553,10 @@ def _fetch_custom(name: str, spec: dict) -> tuple[Path, Path]:
 
 
 def _load(sep, model: str, custom: dict) -> None:
-    """Load a model into the separator, including the [stems.custom_models] ones (always
-    afresh: settings such as the segment size are taken at load time)."""
-    import gc
-
+    """Load a model into a separator, including the [stems.custom_models] ones (settings such
+    as the segment size are taken at load time: a model loaded otherwise is another separator's)."""
     import torch
 
-    sep.model_instance = None  # the previous model's GPU memory, released before the next one loads
-    gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
     if model in custom:
         ckpt, yaml = _fetch_custom(model, custom[model])
         spec = custom[model]
@@ -433,12 +592,10 @@ def _keep(src: Path, dst: Path, sr: int, fs: int, n_out: int, mono: bool, gain: 
     return KEEP_DB + 20 * np.log10(extra)
 
 
-def _worker_roformer(inp: Path, out_dir: Path, cfg: dict) -> None:
-    import logging
-
-    import torch
-    from audio_separator.separator import Separator
-
+def _worker_roformer(inp: Path, out_dir: Path, cfg: dict, models: _Models | None = None) -> None:
+    """One source through the plan's steps. models: this process's loaded models, kept from one
+    source to the next (a process that does one job has its own)."""
+    models = models if models is not None else _Models()
     sr = 44100  # what these models are trained on
     x, fs = sf.read(inp, dtype="float32", always_2d=True)
     n_out, mono = len(x), x.shape[1] == 1
@@ -456,9 +613,6 @@ def _worker_roformer(inp: Path, out_dir: Path, cfg: dict) -> None:
     del x
 
     MODEL_DIR.mkdir(parents=True, exist_ok=True)
-    sep = Separator(log_level=logging.ERROR, model_file_dir=str(MODEL_DIR), output_dir=str(work / "out"),
-                    output_format="WAV", use_soundfile=True, sample_rate=sr, use_autocast=cfg["device"] != "cpu",
-                    normalization_threshold=1.0, amplification_threshold=0.0)
     keep = cfg.get("keep_models", True)
     kept: list[dict] = []
     n_models = sum(len(members(step)) for step in model_steps(cfg) if "combine" not in step)  # for the progress events
@@ -499,15 +653,8 @@ def _worker_roformer(inp: Path, out_dir: Path, cfg: dict) -> None:
             print(f"  stems: step {i + 1}: {m['model']} on {src}", file=sys.stderr, flush=True)
             progress.emit("separation", track=out_dir.name, state="step", i=n_run, n=n_models, model=_short(m["model"]))
             n_run += 1
-            # segment_size (STFT frames): shorter model windows than its config's, for models too big
-            # for the GPU at their own (e.g. 53 stems at 20 s); the separator is told at load time
-            # pitch_shift (semitones): the input is shifted down by this much before the model and the
-            # outputs back up (UVR's "pitch change"), e.g. as a second pass to average with the first
-            sep.arch_specific_params["MDXC"].update(segment_size=m.get("segment_size", 256),
-                                                    override_model_segment_size="segment_size" in m,
-                                                    pitch_shift=m.get("pitch_shift", 0))
-            _load(sep, m["model"], cfg.get("custom_models", {}))
             t0 = time.time()
+            sep = models.get(m, cfg, work / "out", sr)
             mapping = {k.lower(): v for k, v in m["outputs"].items()}
             raw = _separate_chunked(sep, src_path, work, sr, m.get("chunk_s", CHUNK_S), set(mapping))
             mine: dict[str, Path] = {}
@@ -551,9 +698,6 @@ def _worker_roformer(inp: Path, out_dir: Path, cfg: dict) -> None:
             f.unlink()
         if src != "mix":
             src_path.unlink()
-    del sep
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
     for name, path in current.items():
         if name == "mix" or name.startswith("_"):
             continue
@@ -571,6 +715,9 @@ def _worker_roformer(inp: Path, out_dir: Path, cfg: dict) -> None:
 
 
 if __name__ == "__main__":
-    job = json.loads(Path(sys.argv[1]).read_text())
-    worker = _worker_roformer if job["cfg"]["backend"] == "roformer" else _worker_demucs
-    worker(Path(job["input"]), Path(job["out_dir"]), job["cfg"])
+    if sys.argv[1] == "--serve":  # the run's separating process: jobs on standard input, answers on this pipe
+        _serve(int(sys.argv[2]))
+    else:  # one job, then gone
+        job = json.loads(Path(sys.argv[1]).read_text())
+        worker = _worker_roformer if job["cfg"]["backend"] == "roformer" else _worker_demucs
+        worker(Path(job["input"]), Path(job["out_dir"]), job["cfg"])

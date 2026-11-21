@@ -22,7 +22,7 @@ def mid_side(x: np.ndarray, fs: float, mono_below_hz: float, width: float,
         side = eq.apply_fir(side[:, None], eq.design_fir(grid, 20 * np.log10(np.maximum(amp, 1e-3)), fs, 8191))[:, 0]
     elif mono_below_hz > 0:
         sos = signal.butter(2, mono_below_hz, "low", fs=fs, output="sos")
-        side = side - signal.sosfiltfilt(sos, side)
+        side = side - signal.sosfiltfilt(sos, side).astype(side.dtype, copy=False)
     if width != 1.0:
         side = side * width
     return np.column_stack([mid + side, mid - side])
@@ -34,10 +34,10 @@ def rebalance(x: np.ndarray, strength: float, max_db: float) -> tuple[np.ndarray
     Returns the corrected signal, the measured L-R difference and the applied
     correction (both in dB).
     """
-    pl, pr = np.mean(x[:, 0] ** 2), np.mean(x[:, 1] ** 2)
+    pl, pr = np.mean(x[:, 0] ** 2, dtype=np.float64), np.mean(x[:, 1] ** 2, dtype=np.float64)
     if pl <= 0 or pr <= 0:
         return x, 0.0, 0.0
     diff = float(10 * np.log10(pl / pr))
     corr = float(np.clip(strength * diff, -max_db, max_db))
     g = 10 ** (corr / 40)
-    return x * np.array([1 / g, g]), round(diff, 2), round(corr, 2)
+    return x * np.array([1 / g, g], x.dtype), round(diff, 2), round(corr, 2)

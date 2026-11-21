@@ -93,7 +93,7 @@ def _project(client: Client, folder: Path, name: str = "Rehearsal") -> dict:
 
 def _stand_in(script: str):
     """A job's command replaced by a script that prints what a run would."""
-    return lambda cfg_path, rooms, profiles, ab, separate_only, again=False: [sys.executable, "-c", script]
+    return lambda cfg_path, rooms, profiles, ab, separate_only, again=False, separate_again=False: [sys.executable, "-c", script]
 
 
 def _wait(client: Client, until, seconds: float = 15.0) -> dict:
@@ -567,9 +567,9 @@ def test_a_job_is_checked_before_it_starts_and_says_why_a_run_died(app, tmp_path
     assert not seen
 
     client.ok("POST", "/api/jobs", {"project": p["id"], "takes": [take], "profiles": ["default", "albini"], "ab": True})
-    cfg_path, rooms, profs, ab, separate_only, again = seen[0]
+    cfg_path, rooms, profs, ab, separate_only, again, separate_again = seen[0]
     assert cfg_path == rec / "rehearsal.toml" and rooms == [str(rec / take / "261105_225442_TrMic.WAV")]
-    assert (profs, ab, separate_only, again) == (["default", "albini"], True, False, False)
+    assert (profs, ab, separate_only, again, separate_again) == (["default", "albini"], True, False, False, False)
     assert jobs.command(cfg_path, rooms, profs, ab, False)[3:] == [rooms[0], "-c", str(cfg_path), "--preset", "default",
                                                                    "--preset", "albini", "--ab"]
     job = _wait(client, lambda j: j["state"] != "running")
@@ -668,6 +668,15 @@ def test_a_run_stopped_for_memory_says_so_and_a_take_left_as_it_is_is_marked(app
     # "also what is up to date" reaches the command line
     assert jobs.command(tmp_path / "rehearsal.toml", ["a.wav"], ["default"], False, False, True)[-1] == "--again"
     assert "--again" not in jobs.command(tmp_path / "rehearsal.toml", ["a.wav"], ["default"], True, False)
+    # "separate again too": the kept stems are not used (which makes the masters again as well), also when only separating
+    assert jobs.command(tmp_path / "rehearsal.toml", ["a.wav"], ["default"], False, False, True, True)[-1] == "--separate-again"
+    assert jobs.command(tmp_path / "rehearsal.toml", ["a.wav"], [], False, True, False, True)[-2:] == ["--separate-only", "--separate-again"]
+    assert "--separate-again" not in jobs.command(tmp_path / "rehearsal.toml", ["a.wav"], ["default"], False, False, True)
+    seen = []
+    a.runner.make_command = lambda *args: seen.append(args) or [sys.executable, "-c", "pass"]
+    client.ok("POST", "/api/jobs", {"project": p["id"], "takes": ["261105_225442 Miramare"], "profiles": ["default"], "separate_again": True})
+    assert seen[0][-2:] == (False, True)
+    _wait(client, lambda j: j["state"] != "running")
 
 
 def test_the_memory_a_run_may_use_goes_with_the_machine(monkeypatch):
@@ -738,3 +747,95 @@ def test_a_take_that_is_up_to_date_is_left_as_it_is_and_the_mix_is_written_next_
     os.utime(tmp_path / tp.NAME, None)  # the recording changed
     run()
     assert len(made) == 6
+
+
+LIVE = r"""
+import json, sys, time
+def emit(**e):
+    print("@@" + json.dumps(e), flush=True)
+take = "261105_225442 Miramare"
+emit(ev="plan", units=[{"take": take, "preset": ""}])
+emit(ev="prepare", take=take, i=0, n=1)
+emit(ev="separation", track=take, state="start")
+emit(ev="separation", track=take, state="step", i=2, n=8, model="bs_roformer")
+if "--sep" in sys.argv: time.sleep(60)
+emit(ev="separation", track=take, state="done")
+emit(ev="separation", track=take + " Tr2", state="cached")
+emit(ev="unit", i=0)
+emit(ev="separation", track=take, state="cached")  # the take's own turn finds the stems made ahead
+emit(ev="stage", key="stems", label="Stem chains", frac=0.2, part=0.0, detail="kick")
+emit(ev="chain", stem="kick", state="done", frac=1.0)
+emit(ev="chain", stem="vocals", state="kept", frac=1.0)
+emit(ev="chain", stem="other", state="silent", frac=1.0)
+emit(ev="chain", stem="hihat", state="clean", frac=0.0)
+emit(ev="chain", stem="hihat", state="clean", frac=0.15)
+emit(ev="chain", stem="snare", state="chain", frac=0.3)
+emit(ev="chain", stem="snare", state="chain", frac=0.65)
+emit(ev="chain", stem="bass", state="chain", frac=0.3)
+if "--chains" in sys.argv: time.sleep(60)
+emit(ev="stage", key="bus", label="Mix bus", frac=0.8, part=0.35, detail="saturation")
+if "--bus" in sys.argv: time.sleep(60)
+emit(ev="unit_done", i=0, ok=True, seconds=2.0, summary={})
+emit(ev="end", failed=[])
+"""
+
+
+def test_the_take_being_made_is_shown_on_its_graph_box_by_box(app, tmp_path):
+    """live.py: the graph of what the run will make (no file of it is there yet), and where each of its
+    boxes is as the run's events come: a separation by its models, each stem's chain by its phases (several at
+    once), the bus by its steps, and all of it done at the end."""
+    a, client = app
+    p = _project(client, tmp_path / "rec")
+    take = "261105_225442 Miramare"
+    body = {"project": p["id"], "takes": [take], "profiles": ["default"]}
+
+    def at(flag, until):
+        a.runner.make_command = lambda *args: [sys.executable, "-c", LIVE, flag]
+        client.ok("POST", "/api/jobs", body)
+        return _wait(client, until)["live"]
+
+    live = at("--sep", lambda j: j["separation"] and j["separation"]["i"] == 2)  # the stems of every take first: this one's
+    assert (live["take"], live["profile"]) == (take, "default") and "graph" not in live
+    got = client.ok("GET", "/api/live")["live"]
+    graph, boxes = got["graph"], {b["id"]: b for b in got["graph"]["boxes"]}
+    assert got["key"] == live["key"] and graph["layers"][0] == "Recording" and graph["layers"][-1] == "Master"
+    for box in ("src/room", "src/Tr2", "sep/room", "sep/Tr2", "stem/bass", "close/Tr2/vocals", "merged/vocals", "cleaned/hihat",
+                "chain/bass", "chain/other", "drum_bus/drum_bus", "premix/bass", "premix/original", "premix/drum_bus", "mix/mix", "master/master"):
+        assert box in boxes, box
+    assert "cleaned/bass" not in boxes and "chain/vocal_room" not in boxes  # only the kit is cleaned; the voice's room goes back into the voice
+    assert all(b["play"] is None for b in boxes.values())  # nothing to play: the files are not there
+    assert all(x["from"] in boxes and x["to"] in boxes for x in graph["arrows"])
+    s = live["states"]
+    assert s["src/room"]["state"] == "done" and s["sep/room"] == {"state": "active", "frac": 0.25, "note": "model 3 of 8: bs_roformer"}
+    assert "stem/bass" not in s and "sep/Tr2" not in s and "mix/mix" not in s  # waiting: not named
+    client.ok("POST", "/api/job/cancel", {})
+
+    s = at("--chains", lambda j: j["current"] == 0 and len(j["units"][0]["chains"]) == 6)["states"]
+    assert s["sep/room"]["state"] == "done" and s["sep/Tr2"]["state"] == "kept" and s["stem/bass"]["state"] == "done"
+    assert s["close/Tr2/vocals"]["state"] == "kept" and s["merged/vocals"]["state"] == "done"
+    assert s["cleaned/kick"]["state"] == s["chain/kick"]["state"] == "done" and s["chain/vocals"]["state"] == "kept"
+    # a chain says how far it is processor by processor: the clean-up is its first 30 %, and each box shows its own part
+    assert s["cleaned/hihat"] == {"state": "active", "frac": 0.5, "note": "clean-up"} and "chain/hihat" not in s
+    assert s["cleaned/snare"]["state"] == "done" and s["chain/snare"] == {"state": "active", "frac": 0.5, "note": "studio chain"}
+    assert s["chain/bass"] == {"state": "active", "frac": 0.3, "note": "studio chain"}
+    assert s["chain/other"]["state"] == s["premix/other"]["state"] == "skipped"
+    assert "chain/guitar" not in s and "drum_bus/drum_bus" not in s and "master/master" not in s
+    client.ok("POST", "/api/job/cancel", {})
+
+    s = at("--bus", lambda j: j["current"] == 0 and j["units"][0]["key"] == "bus")["states"]
+    assert s["mix/mix"] == {"state": "active", "frac": 0.35, "note": "saturation"} and "master/master" not in s
+    assert s["chain/guitar"]["state"] == "done" and s["chain/vocals"]["state"] == "kept" and s["chain/other"]["state"] == "skipped"
+    assert s["drum_bus/drum_bus"]["state"] == s["premix/bass"]["state"] == s["premix/original"]["state"] == "done"
+    stopped = client.ok("POST", "/api/job/cancel", {})["job"]
+    stopped = _wait(client, lambda j: j["state"] != "running")
+    assert stopped["live"]["states"]["mix/mix"] == {"state": "stopped"}  # where the run was when it was stopped
+
+    done = at("--none", lambda j: j["state"] == "done")
+    assert set(done["states"]) == set(boxes) - {"src/mixdown"} | ({"src/mixdown"} & set(done["states"]))
+    assert done["states"]["master/master"]["state"] == "done" and done["states"]["chain/other"]["state"] == "skipped"
+
+    a.runner.make_command = lambda *args: [sys.executable, "-c", LIVE, "--sep"]  # a run that only separates: its graph ends at the stems
+    client.ok("POST", "/api/jobs", {"project": p["id"], "takes": [take], "separate_only": True})
+    _wait(client, lambda j: j["separation"] and j["live"])
+    only = client.ok("GET", "/api/live")["live"]["graph"]
+    assert only["layers"] == ["Recording", "Separation", "Stems", "Merged"] and not any(b["id"].startswith(("chain/", "mix/")) for b in only["boxes"])

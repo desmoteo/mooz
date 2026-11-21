@@ -752,11 +752,13 @@ processed/stems_ensemble_merged/<settings>/<take>/  the stems with the close tra
 | module | responsibility |
 |---|---|
 | `cli.py` | arguments, file collection, the memory-capped scope and what is said when it stops a run, takes that are up to date left as they are, summaries, `--learn-balance` |
-| `progress.py` | where a run is: one JSON event per line for a front end, only with `REHEARSAL_PROGRESS` set; the stages' shares of a take's time |
-| `gui/` | the web app ([GUI.md](GUI.md)): a local server over the command line, the list of projects, the settings and profile forms, the job and its progress, a take's files along the pipeline for listening (`gui/stagemap.py`), two profiles' masters compared blind and the verdicts (`gui/listening.py`) |
+| `progress.py` | where a run is: one JSON event per line for a front end, only with `REHEARSAL_PROGRESS` set; the stages' shares of a take's time; each stem's chain by its phase and, processor by processor, how far (`chain`, `tick`) |
+| `gui/` | the web app ([GUI.md](GUI.md)): a local server over the command line, the list of projects, the settings and profile forms, the job and its progress, a take's files along the pipeline for listening (`gui/stagemap.py`), the take being made on that graph box by box (`gui/live.py`), two profiles' masters compared blind and the verdicts (`gui/listening.py`) |
 | `config.py` | layered, validated settings; track inheritance |
 | `pipeline.py` | the stage order; drum bus; the original blend and the balance in it; master loop |
 | `chaincache.py` | each stem's chain kept under a key of everything it reads: a mix or master change does not run the stem chains again |
+| `compiled.py` | loops over the samples, compiled with numba (the envelope follower, the attack smoothing) |
+| `expr.py` | element-wise mathematics on whole signals, on threads (numexpr): dB to gain, level to dB, a gain curve times the audio |
 | `character.py` | stage 0 metrics and style |
 | `profile.py` | stage 0 stem profiles, cross-song targets, tone match |
 | `takes.py` | what was recorded: which files make a take, its room and close tracks, the recorder's mix-down |
@@ -776,11 +778,41 @@ processed/stems_ensemble_merged/<settings>/<take>/  the stems with the close tra
 
 ## 8. Performance
 
-Per 4–5 minute song, on the laptop's RTX GPU: separation about 6–7 min the first time with
-the ensemble plan (5–6 min with cascade; cached afterwards, about 1.6 GB per song with every
+Per 5 minute song, on the laptop's RTX GPU: separation about 6 min for the room track the first time
+with the ensemble plan and 4 to 5 min more for a close track (9 and 8 min until 20 November 2026,
+before the compiled blocks) (5–6 min with cascade; cached afterwards, about 1.6 GB per song with every
 model's kept outputs); stem profiles about 15 s the first time (cached); processing about
 4 min; peak memory about 3 GB. Stage files take about
 0.5 GB per song (FLAC).
+
+Since 19 November 2026 the processing uses more than one core ([SPEED.md](SPEED.md) has the
+measurements and what each step gave). The stem chains are made up to three at once, each in a
+process of its own (`[chains] workers`, `MOOZ_WORKERS`; 0, the default, takes as many as the
+memory to spare allows: a worker needs about 0.6 GB and 0.4 GB per minute of take, the run itself
+1.5 GB and 0.25 per minute meanwhile, and the run's memory limit covers them all). A worker makes a chain and keeps it as a kept chain; the run takes it
+up as one, so the master is the same file whatever the number of workers. In each process the
+oversampling loops read ahead on threads (`MOOZ_THREADS`), the stage files are encoded on a
+thread of their own (`stage.flush()` waits for them) and the MP3 encoders run while the report
+is drawn. The envelope follower and the attack smoothing are compiled loops (numba,
+[compiled.py](../mooz/compiled.py)); the detectors' and gain curves' element-wise mathematics runs on
+threads ([expr.py](../mooz/expr.py), numexpr). The audio is held in float32 from the stems' stage to the
+master (`[audio] float = 32`; 64 for the whole in 64 bits): what measures and decides, every gain curve
+and the arithmetic of the IIR filters stay in 64 bits, and the stems come out the same down to the floor
+of a 24-bit file. The bass's pitch is kept with the take's chains (`_pitch/`), the hit triggers are made
+once a take, and the glue's threshold search works on the level alone.
+The launcher asks glibc's allocator for huge pages (`GLIBC_TUNABLES`, unless set): a run
+allocates and frees whole stems all the time, and in 4 KiB pages that was a fifth of its
+processor time. Zero-phase filters run their two channels on a thread each, and where only the mono sum of a
+filtered signal is wanted the mono sum is filtered. On Biancaneve (4:50), old and new code in turn:
+about 250 s before, about 95 s after with three workers and the audio in float32 (the number of
+workers follows the memory to spare when the take starts; a worker needs 2.3 GB on this take and the
+run itself 2.4 GB).
+
+The separation is one process for as long as a run has something to separate: its models stay loaded
+from one source to the next, each in a separator of its own, and their repeated blocks are compiled
+(`[stems] compile`, audio-separator's `use_torch_compile`; the compiled code is kept in
+`~/.cache/mooz/compiled`). On Biancaneve (4:58, a close track) a first run's separation went from 1063 s
+to 659 s. The run ends that process before the stem chains start.
 
 A second run of a take does not run the stem chains again unless what they read has changed
 ([chaincache.py](../mooz/chaincache.py)): each stem's processed result is kept under
@@ -806,12 +838,12 @@ program's source, the take's resolved settings, the recorder's files by name, si
 every file the report names is there. Such a take is not made again unless `--again` asks: a run
 that stopped goes on where it stopped. The stems of the separation are a cache of their own
 (the recording by name, size and time, the filters before it, the plan's models): `--again` uses
-them. What the other takes bring (the tone targets are medians over
+them, `--separate-again` separates every track once more in that run and then masters. What the other takes bring (the tone targets are medians over
 all of them) is not in that name.
 
 ## 9. Tests
 
-`uv run pytest` (106 checks): K-weighting and loudness of a reference sine, compressor
+`uv run pytest` (132 checks): K-weighting and loudness of a reference sine, compressor
 release, exact band reconstruction, limiter ceiling, mono bass, FIR accuracy, every effect on
 synthetic signals (de-esser, resonances, transients, bass enhancer, saturator, gates, ducks),
 pan split (and that it runs outside the separation cache), chunked separation, hum, expander
@@ -837,6 +869,10 @@ the `5_premix` parts add up to the mix;
 why that library is pinned.
 `test_bed.py` the bed goes and the hat's hits stay, an open hat's own decay is not a bed, the snare's
 burst is keyed on the snare stem.
+`test_speed.py` the faster ways give what the plain ones gave: the channel helpers, the oversampling on
+threads, the compiled envelope follower, stage files written on their thread, the MP3 encoders, the launcher's
+variable; a chain's progress said after each processor that took a while, and one tick in the code per
+processor counted. `test_pipeline.py` also checks that chains made by workers give the same master to the byte.
 `test_gui.py` the web app over HTTP on a temporary folder (a project from a folder, the settings form
 keeping the file's comments, nothing saved that does not load, a project's own profile, a built-in one
 edited as the project's version, a take's files laid out along the pipeline, a job followed through its

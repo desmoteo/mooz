@@ -1,0 +1,27 @@
+  stems: using cache
+  stems: using cache
+  stems: using cache
+  stems: using cache
+	Command being timed: "uv run --frozen mooz /tmp/claude-1001/-media-secure-storage-Personal-Circhi/1d8dd9b8-8da2-47f5-adaf-4f968af2583f/scratchpad/speed/rec -c /tmp/claude-1001/-media-secure-storage-Personal-Circhi/1d8dd9b8-8da2-47f5-adaf-4f968af2583f/scratchpad/speed/rehearsal.toml --preset default --no-chain-cache --again"
+	User time (seconds): 248.52
+	System time (seconds): 68.20
+	Percent of CPU this job got: 118%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 4:26.27
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 3405560
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 2038
+	Minor (reclaiming a frame) page faults: 7433145
+	Voluntary context switches: 214741
+	Involuntary context switches: 31263
+	Swaps: 0
+	File system inputs: 4853328
+	File system outputs: 3609552
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0

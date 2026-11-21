@@ -8,6 +8,7 @@ const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "
 
 const S = {
   projects: [], job: null, lines: 0, log: [],
+  live: null,               // the graph of the take the job is at ({key, graph}); its boxes' states come with the job
   route: { name: "home" },
   project: null,            // the shown project's detail
   sel: {},                  // per project: the ticked takes and profiles
@@ -129,6 +130,7 @@ function renderJob() {
     el.innerHTML = `<div class="job-head"><h2 id="job-title"></h2><div class="row" id="job-buttons"></div></div>
       <div id="job-wave"></div>
       <div class="job-now"><span id="job-now"></span><span class="muted num" id="job-time"></span></div>
+      <div id="job-live" data-key=""></div>
       <ul class="units" id="job-units"></ul>
       <details class="log" ${S.logOpen ? "open" : ""}><summary>What the run printed</summary><pre id="job-log"></pre></details>`;
     $("#job-log").textContent = S.log.join("\n");
@@ -153,6 +155,97 @@ function renderJob() {
       <span class="secs num" ${u.kept ? 'title="Already mastered with these settings, recordings and code: not made again"' : ""}>${u.kept ? "up to date" : u.seconds != null ? span(u.seconds) : u.state === "running" ? `${Math.round(u.frac * 100)} %` : ""}</span>
       ${u.error ? `<span class="unit-error">${esc(u.error)}</span>` : ""}</li>`).join("");
   list.scrollTop = top;
+}
+
+// ---- the take the job is at, on its graph --------------------------------------------------------
+// The graph is the take's own (the take's page draws it from the files a run left; this one is drawn
+// from what the run will make, so that a take's first run has one too). It comes once a take; where
+// each box is comes with the job at every poll: waiting, at work (and how far), done, kept, left out.
+
+const LIVE_WORDS = { active: "at work", done: "done", kept: "kept", skipped: "left out", stopped: "stopped here" };
+
+function liveHtml(g) {
+  const at = {};
+  for (const b of g.boxes) at[b.id] = { x: GR.left + b.layer * GR.dx, y: GR.top + b.lane * GR.dy };
+  const W = GR.left * 2 + (g.layers.length - 1) * GR.dx + GR.w, H = GR.top + (Math.max(0, ...g.boxes.map((b) => b.lane)) + 1) * GR.dy;
+  const arrows = g.arrows.map((a) => {
+    const p = at[a.from], q = at[a.to], x1 = p.x + GR.w, y1 = p.y + GR.h / 2, x2 = q.x, y2 = q.y + GR.h / 2, bend = Math.max(16, (x2 - x1) / 2);
+    const line = p.x === q.x ? `M${p.x + GR.w / 2} ${p.y + GR.h}V${q.y}` : `M${x1} ${y1}C${x1 + bend} ${y1} ${x2 - bend} ${y2} ${x2} ${y2}`;
+    return `<g class="garrow${a.unused ? " unused" : ""}" data-from="${esc(a.from)}" data-to="${esc(a.to)}"><path d="${line}"/></g>`;
+  }).join("");
+  const boxes = g.boxes.map((b) => {
+    const p = at[b.id], r = b.step ? 5 : 14;
+    return `<g class="gbox${b.step ? " step" : ""}${b.unused ? " unused" : ""}" transform="translate(${p.x} ${p.y})" data-box="${esc(b.id)}" data-label="${esc(b.label)}">
+      <title></title><clipPath id="lc-${esc(b.id.replace(/[^a-z0-9]/gi, "-"))}"><rect width="${GR.w}" height="${GR.h}" rx="${r}"/></clipPath>
+      <rect class="gframe" width="${GR.w}" height="${GR.h}" rx="${r}"/>
+      <rect class="gfill" width="0" height="${GR.h}" clip-path="url(#lc-${esc(b.id.replace(/[^a-z0-9]/gi, "-"))})"/>
+      <text x="${GR.w / 2}" y="${GR.h / 2 + 4.5}" text-anchor="middle">${esc(b.label)}</text></g>`;
+  }).join("");
+  return `<svg class="graph live" viewBox="0 0 ${W} ${H}" role="img" aria-label="The take being made, step by step">
+    ${g.layers.map((t, i) => `<text class="glayer" data-layer="${i}" x="${GR.left + i * GR.dx}" y="16">${esc(t)}</text>`).join("")}${arrows}${boxes}</svg>`;
+}
+
+// the states onto a drawn graph: the live one (every box), or the take's page's (only what is at work or done now)
+function paintLive(svg, states, whole) {
+  if (!svg) return;
+  const layers = new Set();
+  svg.querySelectorAll(".gbox").forEach((el) => {
+    const st = states ? states[el.dataset.box] : null, state = st ? st.state : whole ? "waiting" : "";
+    for (const c of ["waiting", "active", "done", "kept", "skipped", "stopped"]) el.classList.toggle(`l-${c}`, c === state);
+    if (!whole) return;
+    const fill = el.querySelector(".gfill"), frac = st && st.state === "active" ? (st.frac ?? null) : null;
+    el.classList.toggle("l-unknown", !!st && st.state === "active" && frac == null);  // at work, how far is not known: it pulses
+    if (fill) fill.setAttribute("width", frac == null ? 0 : Math.max(3, Math.round(frac * GR.w)));
+    const title = el.querySelector("title");
+    if (title) title.textContent = `${el.dataset.label}: ${st ? LIVE_WORDS[st.state] || st.state : "waiting"}${st && st.frac != null && st.state === "active" ? `, ${Math.round(st.frac * 100)} %` : ""}${st && st.note ? ` (${st.note})` : ""}`;
+    if (st && st.state === "active") layers.add(String(Math.round((el.transform.baseVal[0].matrix.e - GR.left) / GR.dx)));
+  });
+  if (!whole) return;
+  svg.querySelectorAll(".glayer").forEach((el) => el.classList.toggle("working", layers.has(el.dataset.layer)));
+  svg.querySelectorAll(".garrow").forEach((el) => {
+    const to = states ? states[el.dataset.to] : null, from = states ? states[el.dataset.from] : null;
+    el.classList.toggle("path", !!to && to.state === "active");
+    el.classList.toggle("l-done", !!to && !!from && to.state !== "active");
+  });
+}
+
+function liveNowHtml(live) {
+  const active = Object.entries(live.states).filter(([, s]) => s.state === "active");
+  if (!active.length) return "";
+  const label = (id) => { const b = S.live && S.live.graph.boxes.find((x) => x.id === id); return b ? `${id.split("/")[0] === "premix" ? "in the mix: " : ""}${b.label}` : id; };
+  const groups = {};
+  for (const [id, s] of active) (groups[s.note || ""] ||= []).push(`${esc(label(id))}${s.frac != null ? ` <span class="num">${Math.round(s.frac * 100)} %</span>` : ""}`);
+  return Object.entries(groups).map(([note, names]) => `<span class="live-chip">${note ? `<span class="muted">${esc(note)}</span> ` : ""}${names.join(", ")}</span>`).join("");
+}
+
+function renderLive() {
+  const el = $("#job-live"), j = S.job, live = j && j.live;
+  if (!el) return;
+  if (!live || !S.live || S.live.key !== live.key) {
+    if (!live) { el.innerHTML = ""; el.dataset.key = ""; }
+    return;
+  }
+  if (el.dataset.key !== live.key) {  // another take: its graph once, then only what moves
+    el.dataset.key = live.key;
+    el.innerHTML = `<details class="live" ${S.liveShut ? "" : "open"}><summary>The pipeline of <strong>${esc(live.take)}</strong>
+        <span class="muted">${esc(live.profile)}</span> <span id="live-now"></span></summary>
+      <div class="map-wrap">${liveHtml(S.live.graph)}</div>
+      <p class="live-key muted"><i class="k-active"></i>at work <i class="k-done"></i>done <i class="k-kept"></i>kept from an earlier run <i class="k-waiting"></i>waiting</p></details>`;
+    el.querySelector("details").addEventListener("toggle", (e) => { S.liveShut = !e.target.open; });
+  }
+  paintLive(el.querySelector(".graph.live"), live.states, true);
+  $("#live-now").innerHTML = j.state === "running" ? liveNowHtml(live) : "";
+}
+
+async function loadLive() {
+  const want = S.job && S.job.live ? S.job.live.key : null;
+  if (!want || (S.live && S.live.key === want) || S.liveAsked === want) return;
+  S.liveAsked = want;
+  try {
+    const got = (await api("GET", "/api/live")).live;
+    if (got && got.graph) { S.live = { key: got.key, graph: got.graph }; renderLive(); }
+  } catch (e) { /* no graph: the rest of the job's panel as ever */ }
+  S.liveAsked = null;
 }
 
 function appendLog(lines) {
@@ -184,6 +277,8 @@ async function poll() {
     if (j) { S.lines = j.lines; }
     if (before !== JSON.stringify(S.projects) || j) renderRail();
     renderJob();
+    renderLive();
+    loadLive();
     markWorking();
     if (j) {
       appendLog(j.log);
@@ -260,7 +355,7 @@ async function loadProject(quiet = false) {
     const p = await api("GET", `/api/projects/${id}`);
     if (S.route.id !== id) return;
     S.project = p;
-    if (!S.sel[id]) S.sel[id] = { takes: new Set(p.takes.map((t) => t.name)), profiles: new Set(p.run), ab: false, again: false };
+    if (!S.sel[id]) S.sel[id] = { takes: new Set(p.takes.map((t) => t.name)), profiles: new Set(p.run), ab: false, again: false, sepAgain: false };
     const sel = S.sel[id], names = new Set(p.takes.map((t) => t.name)), profs = new Set(p.profiles.map((x) => x.name));
     for (const t of [...sel.takes]) if (!names.has(t)) sel.takes.delete(t);
     for (const x of [...sel.profiles]) if (!profs.has(x)) sel.profiles.delete(x);
@@ -333,7 +428,8 @@ function renderProject() {
           <input type="checkbox" data-act="tick-profile" data-profile="${esc(x.name)}" ${sel.profiles.has(x.name) ? "checked" : ""} ${x.error ? "disabled" : ""}>${esc(x.name)}</label>`).join("")}</div></div>
       <div class="go">
         <label title="Original and master in turns every 10 s, at the same loudness"><input type="checkbox" data-act="tick-ab" ${sel.ab ? "checked" : ""}> A/B files too</label>
-        <label title="A take already mastered with these very settings is left as it is, so a job that stopped half-way goes on where it stopped. Tick this to make those again too."><input type="checkbox" data-act="tick-again" ${sel.again ? "checked" : ""}> Also what is up to date</label>
+        <label title="A take already mastered with these very settings is left as it is, so a job that stopped half-way goes on where it stopped. Tick this to make those masters again too. The stems of the separation are still the kept ones: they depend on the recording and the models only."><input type="checkbox" data-act="tick-again" ${sel.again || sel.sepAgain ? "checked" : ""} ${sel.sepAgain ? "disabled" : ""}> Also masters that are up to date</label>
+        <label title="The chosen takes' tracks are separated into stems again instead of using the stems kept from an earlier run, and their masters made again. The slow part: several minutes per track, on the graphics card. The kept stems are replaced."><input type="checkbox" data-act="tick-sep-again" ${sel.sepAgain ? "checked" : ""}> Separate again too</label>
         <button class="quiet" type="button" data-act="separate" id="separate" title="Only split the takes into stems (the slow part, on the GPU) and keep them for later">Separate only</button>
         <button type="button" data-act="remaster" id="remaster"></button>
       </div>
@@ -692,11 +788,13 @@ function nextPad(dx, dy) {
 }
 
 function markWorking() {
-  document.querySelectorAll(".map .working, .graph .working").forEach((el) => el.classList.remove("working"));
-  const j = S.job, m = S.map;
+  document.querySelectorAll(".map .working, .graph:not(.live) .working").forEach((el) => el.classList.remove("working"));
+  const j = S.job, m = S.map, own = document.querySelector(".graph:not(.live)");
+  paintLive(own, null, false);
   if (!m || S.route.name !== "take" || !j || j.state !== "running" || j.current == null) return;
   const u = j.units[j.current];
   if (j.project.id !== S.route.id || u.take !== m.take.name || u.profile !== m.profile) return;
+  if (j.live && j.live.take === u.take && j.live.profile === u.profile) paintLive(own, j.live.states, false);  // the take's own graph: its boxes at work
   const col = j.separation ? "separated" : STAGE_COLUMN[u.key];
   document.querySelectorAll(".map .col-head, .graph .glayer").forEach((el) => el.classList.toggle("working", el.dataset.col === col));
   if (u.key === "stems" && u.detail && !j.separation) {
@@ -1133,7 +1231,7 @@ async function startJob(separateOnly) {
   try {
     const order = p.takes.map((t) => t.name).filter((n) => sel.takes.has(n));
     const profiles = p.profiles.map((x) => x.name).filter((n) => sel.profiles.has(n));
-    await api("POST", "/api/jobs", { project: p.id, takes: order, profiles, ab: sel.ab, again: sel.again, separate_only: separateOnly });
+    await api("POST", "/api/jobs", { project: p.id, takes: order, profiles, ab: sel.ab, again: sel.again, separate_again: sel.sepAgain, separate_only: separateOnly });
     S.dismissed = 0;
     window.scrollTo({ top: 0, behavior: "smooth" });
     await poll();
@@ -1154,6 +1252,7 @@ const actions = {
   "tick-profile": (el) => { const s = S.sel[S.project.id].profiles; el.checked ? s.add(el.dataset.profile) : s.delete(el.dataset.profile); renderProject(); },
   "tick-ab": (el) => { S.sel[S.project.id].ab = el.checked; },
   "tick-again": (el) => { S.sel[S.project.id].again = el.checked; },
+  "tick-sep-again": (el) => { S.sel[S.project.id].sepAgain = el.checked; renderProject(); },  // (it makes the masters again too: the other box shows it)
   remaster: () => startJob(false),
   separate: () => startJob(true),
   "cancel-job": async () => {

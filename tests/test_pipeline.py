@@ -248,7 +248,8 @@ def test_kept_stem_chains_give_the_same_master_and_only_a_changed_chain_runs_aga
     first, master, cfg = _run(path, tmp_path, {})
     assert first["chains"] == {"reused": [], "made": first["chains"]["made"]} and sorted(first["chains"]["made"]) == played
     kept = path.parent / cfg["chains"]["dir"] / path.stem
-    assert sorted(d.name for d in kept.iterdir()) == ["_character"] + played and all(len(list(d.iterdir())) == 1 for d in kept.iterdir())
+    # (_pitch: the bass's pitch, kept with the chains because it reads only the stem)
+    assert sorted(d.name for d in kept.iterdir()) == ["_character", "_pitch"] + played and all(len(list(d.iterdir())) == 1 for d in kept.iterdir())
 
     ran, looked = [], []
     studio, characterise = pipeline.effects.studio_track, pipeline.character.characterise
@@ -309,3 +310,107 @@ def test_kept_chains_are_thinned_and_a_folder_that_cannot_be_written_costs_only_
     nowhere = chaincache.Chains(blocked / "take")
     nowhere.store("bass", key, made_of, proc, FS, {}, {}, None, None, {})  # no error: the run goes on
     assert "could not be kept" in capsys.readouterr().err and nowhere.load("bass", key, proc.parent) is None
+
+
+def test_chains_made_by_workers_give_the_same_master(song, tmp_path, monkeypatch):
+    """Stem chains in processes of their own (pipeline._chain_job): the same master, to the byte, the
+    same report and the same stage files as one chain after the other, whether chains are kept or not."""
+    mix, stems = song
+    path = tmp_path / NAME
+    sf.write(path, mix.astype(np.float32), FS, subtype="FLOAT")
+    _fixture_separation(monkeypatch, mix, stems, config.load(None)["highpass"])
+    played = sorted(n for n in stems if n not in ("other", "vocal_room"))
+    not_kept = {"chains": {"enabled": False}}
+    stage_files = lambda rep: {f.relative_to(rep["outputs"]["stages"]).as_posix(): f.read_bytes()  # noqa: E731
+                               for f in sorted(pipeline.Path(rep["outputs"]["stages"]).rglob("*.flac"))}
+
+    one, master_one, _ = _run(path, tmp_path, not_kept)
+    files_one = stage_files(one)
+    assert {"2_stems/bass.flac", "3_drum_cleanup/snare_removed.flac", "5_mix.flac"} <= set(files_one)
+
+    ran = []
+    studio = pipeline.effects.studio_track
+    monkeypatch.setattr(pipeline.effects, "studio_track", lambda *a, **k: (ran.append(1), studio(*a, **k))[1])
+    monkeypatch.setenv("MOOZ_WORKERS", "3")
+    try:
+        many, master_many, _ = _run(path, tmp_path, not_kept)
+        assert not ran  # no chain was made in this process
+        assert master_many == master_one and _same_but_chains(many, one) and stage_files(many) == files_one
+
+        kept, master_kept, _ = _run(path, tmp_path, {})  # with the chains kept: the workers leave them for later runs
+        assert not ran and sorted(kept["chains"]["made"]) == played and kept["chains"]["reused"] == []
+        assert master_kept == master_one and stage_files(kept) == files_one
+    finally:
+        pipeline._stop_workers()
+    monkeypatch.setenv("MOOZ_WORKERS", "1")
+    again, master_again, _ = _run(path, tmp_path, {})
+    assert not ran and sorted(again["chains"]["reused"]) == played and master_again == master_one
+
+
+def test_the_audio_in_32_bits_is_the_audio_in_64_to_the_floor_of_the_files(song, tmp_path, monkeypatch):
+    """[audio] float: 32 (the default) holds the samples in float32 from the stems' stage to the master. The
+    stems come out as in 64 bits down to what a 24-bit file can hold; nothing that decides falls otherwise."""
+    mix, stems = song
+    path = tmp_path / NAME
+    sf.write(path, mix.astype(np.float32), FS, subtype="FLOAT")
+    _fixture_separation(monkeypatch, mix, stems, config.load(None)["highpass"])
+    assert config.load(None)["audio"]["float"] == 32
+    not_kept = {"chains": {"enabled": False}}
+
+    def staged(rep):
+        root = pipeline.Path(rep["outputs"]["stages"])
+        return {f.relative_to(root).as_posix(): sf.read(f, dtype="float64", always_2d=True)[0] for f in sorted(root.rglob("*.flac"))
+                if "samples" not in f.parts}
+
+    r32, _, _ = _run(path, tmp_path, not_kept)
+    s32, m32 = staged(r32), sf.read(r32["outputs"]["wav"], dtype="float64")[0]
+    r64, _, _ = _run(path, tmp_path, config._deep(not_kept, {"audio": {"float": 64}}))
+    s64, m64 = staged(r64), sf.read(r64["outputs"]["wav"], dtype="float64")[0]
+    db = lambda a, b: 10 * np.log10(np.mean((a - b) ** 2) / (np.mean(b ** 2) + 1e-30) + 1e-30)  # noqa: E731
+    assert set(s32) == set(s64) and len(s64) > 15
+    for rel in s64:
+        if rel != "5_mix.flac" and s64[rel].any():
+            assert db(s32[rel], s64[rel]) < -90.0, rel  # (the stems: about -115 dB on a real take; the files are 24-bit)
+    assert db(s32["5_mix.flac"], s64["5_mix.flac"]) < -50.0 and db(m32, m64) < -50.0  # the bus answers a last bit with a hair of gain
+    plain = lambda r: {k: v for k, v in r.items() if k not in ("chains", "outputs")}  # noqa: E731
+    differ = [k for k in plain(r64) if json.dumps(plain(r64)[k], default=float, sort_keys=True) != json.dumps(plain(r32)[k], default=float, sort_keys=True)]
+    assert set(differ) <= {"tracks", "processed", "glue", "multiband", "finalize", "mix", "consistency", "eq_db", "saturation"}, differ
+    assert r32["processed"]["integrated_lufs"] == r64["processed"]["integrated_lufs"]
+    for name in ("kick", "snare", "toms"):  # the same hits found, the same samples placed
+        assert r32["tracks"][name].get("augment") == r64["tracks"][name].get("augment"), name
+
+    with pytest.raises(ValueError, match="audio.float"):
+        _run(path, tmp_path, {"audio": {"float": 16}})
+
+
+def test_no_function_hands_back_64_bit_audio_when_it_is_held_in_32(song, tmp_path, monkeypatch):
+    """What keeps [audio] float = 32 true: every function of the effect modules given float32 audio (samples x
+    1 or 2 channels) hands float32 audio back. The loudness meter's weighted copy is the one exception: it is a
+    measurement, in 64 bits, and goes no further."""
+    import inspect
+
+    from mooz import augment, bed, cleanup, dynamics, effects, eq, loudness as ld, note_eq, plugins, space, stereo, trim
+
+    mix, stems = song
+    path = tmp_path / NAME
+    sf.write(path, mix.astype(np.float32), FS, subtype="FLOAT")
+    _fixture_separation(monkeypatch, mix, stems, config.load(None)["highpass"])
+    widened = set()
+    audio = lambda a: isinstance(a, np.ndarray) and a.ndim == 2 and a.shape[1] <= 2 and a.shape[0] >= 1024  # noqa: E731
+    kinds = lambda v: {str(v.dtype)} if audio(v) else set().union(*(kinds(u) for u in v)) if isinstance(v, tuple) and v else set()  # noqa: E731
+
+    def watched(where, f):
+        def g(*a, **k):
+            given = set().union(*(kinds(v) for v in [*a, *k.values()])) if a or k else set()
+            out = f(*a, **k)
+            if "float32" in given and "float64" in kinds(out):
+                widened.add(where)
+            return out
+        return g
+
+    for mod in (augment, bed, cleanup, dynamics, effects, eq, ld, note_eq, pipeline, plugins, space, stereo, trim):
+        for name, f in list(vars(mod).items()):
+            if inspect.isfunction(f) and f.__module__ == mod.__name__ and not inspect.isgeneratorfunction(f):
+                monkeypatch.setattr(mod, name, watched(f"{mod.__name__.split('.')[-1]}.{name}", f))
+    _run(path, tmp_path, {"chains": {"enabled": False}})
+    assert widened <= {"loudness._k_weighted"}, widened

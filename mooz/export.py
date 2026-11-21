@@ -37,15 +37,37 @@ def write_wav(path: Path, x: np.ndarray, fs: int, bit_depth: int) -> None:
     sf.write(path, np.clip(dithered, -1.0, 1.0 - lsb), fs, subtype=f"PCM_{bit_depth}")
 
 
-def write_mp3(wav: Path, mp3: Path, bitrate: str, tags: dict[str, str]) -> bool:
-    if shutil.which("ffmpeg") is None:
-        return False
+def _mp3_command(wav: Path, mp3: Path, bitrate: str, tags: dict[str, str]) -> list[str]:
     cmd = ["ffmpeg", "-y", "-v", "error", "-i", str(wav), "-codec:a", "libmp3lame", "-b:a", bitrate]
     for key, value in tags.items():
         if value:
             cmd += ["-metadata", f"{key}={value}"]
-    subprocess.run([*cmd, str(mp3)], check=True)
+    return [*cmd, str(mp3)]
+
+
+def write_mp3(wav: Path, mp3: Path, bitrate: str, tags: dict[str, str]) -> bool:
+    if shutil.which("ffmpeg") is None:
+        return False
+    subprocess.run(_mp3_command(wav, mp3, bitrate, tags), check=True)
     return True
+
+
+def start_mp3(wav: Path, mp3: Path, bitrate: str, tags: dict[str, str], started: list) -> bool:
+    """write_mp3 without the wait: the encoder is started and added to `started`, and the run goes
+    on (a master's MP3 takes four seconds). finish(started) waits for them. False without ffmpeg."""
+    if shutil.which("ffmpeg") is None:
+        return False
+    cmd = _mp3_command(wav, mp3, bitrate, tags)
+    started.append((cmd, subprocess.Popen(cmd)))
+    return True
+
+
+def finish(started: list) -> None:
+    """Wait for the encoders start_mp3 started; one that failed raises, as write_mp3 would have."""
+    failed = [(cmd, proc.returncode) for cmd, proc in started if proc.wait() != 0]
+    started.clear()
+    if failed:
+        raise subprocess.CalledProcessError(failed[0][1], failed[0][0])
 
 
 def ab_mix(original: np.ndarray, processed: np.ndarray, fs: int, gain_orig_db: float, gain_proc_db: float, segment_s: float) -> np.ndarray:

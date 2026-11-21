@@ -1,0 +1,6 @@
+BS-Roformer-SW.ckpt          overlap 8:  42.0 s for 60 s of audio, GPU peak 1.6 GB
+BS-Roformer-SW.ckpt          overlap 4:  20.9 s for 60 s of audio, GPU peak 1.6 GB | difference from overlap 8, dB re each stem: {'bass': -39.2, 'drums': -35.8, 'vocals': -43.1, 'guitar': -42.6}
+BS-Roformer-SW.ckpt          overlap 2:  11.2 s for 60 s of audio, GPU peak 1.6 GB | difference from overlap 8, dB re each stem: {'bass': -32.5, 'drums': -29.1, 'vocals': -36.5, 'guitar': -35.2}
+model_bs_roformer_ep_317_sdr overlap 8:  66.4 s for 60 s of audio, GPU peak 1.6 GB
+model_bs_roformer_ep_317_sdr overlap 4:  33.6 s for 60 s of audio, GPU peak 1.6 GB | difference from overlap 8, dB re each stem: {'instrumental': -35.4, 'vocals': -36.3}
+model_bs_roformer_ep_317_sdr overlap 2:  17.5 s for 60 s of audio, GPU peak 1.6 GB | difference from overlap 8, dB re each stem: {'instrumental': -30.3, 'vocals': -31.2}

@@ -1,0 +1,9 @@
+# 20 November 2026: the bass chain in mono (MOOZ_MONO=1) against the same code in stereo, in turn, 3 workers
+m_stereo1 exit 0 | 2:12.58 wall | user 290.14 s | system 51.23 s | main peak 2736 MB | load 11.00 | 102 C
+  chains    9 made on 3 workers: kick 11 s, snare 15 s, toms 9 s, bass 48 s, cymbals 13 s, guitar 20 s, hihat 18 s, other 0 s, vocals 21 s (a worker's memory at most 2.6 GB)
+m_mono1 exit 0 | 2:02.90 wall | user 262.66 s | system 45.43 s | main peak 2731 MB | load 9.90 | 101 C
+  chains    9 made on 3 workers: kick 11 s, snare 14 s, toms 8 s, bass 37 s, cymbals 12 s, guitar 20 s, hihat 16 s, other 0 s, vocals 21 s (a worker's memory at most 2.6 GB)
+m_mono2 exit 0 | 2:06.46 wall | user 266.72 s | system 45.20 s | main peak 2732 MB | load 6.79 | 98 C
+  chains    9 made on 3 workers: kick 11 s, snare 14 s, toms 8 s, bass 36 s, cymbals 12 s, guitar 19 s, hihat 17 s, other 0 s, vocals 20 s (a worker's memory at most 2.6 GB)
+m_stereo2 exit 0 | 2:07.39 wall | user 289.56 s | system 50.31 s | main peak 2728 MB | load 5.17 | 91 C
+  chains    9 made on 3 workers: kick 12 s, snare 15 s, toms 8 s, bass 49 s, cymbals 12 s, guitar 20 s, hihat 18 s, other 0 s, vocals 21 s (a worker's memory at most 2.6 GB)

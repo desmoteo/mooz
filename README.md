@@ -35,6 +35,7 @@ uv run mooz --target -16          # loudness target (LUFS)
 uv run mooz --analyze             # measure only, write nothing
 uv run mooz --no-chain-cache      # run every stem's chain again (they are kept from run to run otherwise)
 uv run mooz --again               # master again also the takes that are up to date
+uv run mooz --separate-again      # separate their tracks again too (the kept stems are replaced), then master
 uv run mooz --learn-balance       # print level targets learnt from all songs
 ```
 
@@ -58,12 +59,18 @@ uv run --with remotezip --with requests python tools/build_drum_samples.py
 The first run of a song separates it (about 6–7 min on the GPU, cached afterwards); processing
 takes about 4 min per song. A take that is already mastered with the same settings, recordings and
 program is left as it is, so a run that stopped half-way goes on where it stopped (`--again` makes
-those again too).
+those again too). `--again` still uses the stems a take was separated into before: they depend on
+the recording and the models only. `--separate-again` separates again as well.
 
 The run is memory-capped, so that a take too long for the machine stops the run and not the desktop.
 The limit is what the machine can spare when the run starts: four fifths of the free memory, at most
 half of all of it, at least 4G (`MOOZ_MEMORY_MAX=24G` sets it, `off` removes it). A take needs
-about 1.3 GB plus 0.5 GB per minute. A run stopped for memory says so.
+about 1.3 GB plus 0.5 GB per minute with one stem chain after the other. Up to three chains are made
+at once, each in a process of its own, where the memory to spare allows: then the run needs about
+1.5 GB plus 0.25 GB per minute and each of those processes 0.6 GB plus 0.4 GB per minute
+(`[chains] workers = 1` or `MOOZ_WORKERS=1` for one after the other; the master is the same file
+either way). The audio is held in 32-bit floats while it is processed (`[audio] float = 64` for 64:
+slower, a little more memory, the stems the same down to the floor of a 24-bit file). A run stopped for memory says so. [docs/SPEED.md](docs/SPEED.md) has where the time goes.
 
 ## Recordings
 
@@ -269,6 +276,6 @@ Background reading, with how this pipeline compares: [docs/RESEARCH.md](docs/RES
 ## Development
 
 ```sh
-uv run pytest          # 106 checks, about 2 min: DSP, settings, takes and close tracks, the pipeline end to end, the web app, the separation library's internals
+uv run pytest          # 132 checks, about 6 min: DSP, settings, takes and close tracks, the pipeline end to end, the web app, the separation library's internals
 uv run --with remotezip --with requests python tools/build_raw_references.py   # rebuild the raw-track references
 ```

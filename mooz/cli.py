@@ -241,7 +241,7 @@ def _run_in_memory_scope() -> None:
     unit = f"mooz-{os.getpid()}-{int(time.time())}"
     child = subprocess.Popen(["systemd-run", "--user", "--scope", "--quiet", "--unit", unit, "-p", f"MemoryMax={limit}",
                               "-p", "MemorySwapMax=0", sys.executable, "-m", "mooz.cli", *sys.argv[1:]],
-                             env=os.environ | {"_REHEARSAL_IN_SCOPE": "1"})
+                             env=_with_huge_pages(os.environ | {"_REHEARSAL_IN_SCOPE": "1"}))
     # Ctrl-C and the web app's Cancel reach the run itself (the same process group); a SIGTERM sent to this one
     # alone is passed on. The run takes the first and ignores the rest, so its clean-up is not cut short
     signal.signal(signal.SIGINT, signal.SIG_IGN)
@@ -390,6 +390,7 @@ def _stop(signum, frame) -> None:
 def main(argv: list[str] | None = None) -> None:
     if argv is None:
         _run_in_memory_scope()
+        _run_with_huge_pages()
         signal.signal(signal.SIGTERM, _stop)
     ap = argparse.ArgumentParser(prog="mooz", description=__doc__)
     ap.add_argument("paths", nargs="*", type=Path,
@@ -403,6 +404,9 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--again", action="store_true",
                     help="master again also the takes that are up to date (made with these very settings, recordings and "
                          "program, all their files there); they are left as they are otherwise")
+    ap.add_argument("--separate-again", action="store_true",
+                    help="separate every track of the chosen takes again instead of using its kept stems (the slow part: "
+                         "minutes per track), then master them, up to date or not; with --separate-only, only separate")
     ap.add_argument("--no-chain-cache", action="store_true",
                     help="run every stem's chain again and keep none for the next run ([chains] enabled = false)")
     ap.add_argument("--preset", metavar="NAME", action="append",
@@ -423,6 +427,9 @@ def main(argv: list[str] | None = None) -> None:
         overrides["output"] = {"mp3": False}
     if args.no_chain_cache:
         overrides["chains"] = {"enabled": False}
+    if args.separate_again:  # new stems under a master that stays would be a master of other stems: made again too
+        pipeline.separate.AGAIN = True
+        args.again = True
     base = config.load(cfg_path, None, overrides)
     paths = args.paths
     if not paths:
@@ -480,6 +487,7 @@ def main(argv: list[str] | None = None) -> None:
                         pipeline.separate_take(take, config.for_file(cfg, take.name))
                     except Exception as e:  # reported again below, when this take's turn comes
                         print(f"  {take.name}: {type(e).__name__}: {e}", file=sys.stderr)
+                pipeline.separate.release()  # every take's stems are there: the separating process is not needed any more
             for take in found:
                 print(f"\n{take.name}" + (f" [{preset}]" if preset else ""))
                 progress.emit("unit", i=unit)

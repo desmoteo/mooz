@@ -24,15 +24,16 @@ LOG_LINES = 2000
 
 
 def command(cfg_path: Path, rooms: list[str], profiles: list[str], ab: bool, separate_only: bool,
-            again: bool = False) -> list[str]:
+            again: bool = False, separate_again: bool = False) -> list[str]:
     """The command line for a job: the takes by one of their files, the profiles as presets.
-    again: also the takes that are already mastered with these very settings (left alone otherwise)."""
+    again: also the takes that are already mastered with these very settings (left alone otherwise).
+    separate_again: their tracks are separated again too, the kept stems not used (and so mastered again)."""
     cmd = [sys.executable, "-m", "mooz.cli", *rooms, "-c", str(cfg_path)]
     if separate_only:
-        return cmd + ["--separate-only"]
+        return cmd + ["--separate-only"] + (["--separate-again"] if separate_again else [])
     for p in profiles:
         cmd += ["--preset", p]
-    return cmd + (["--ab"] if ab else []) + (["--again"] if again else [])
+    return cmd + (["--ab"] if ab else []) + (["--separate-again"] if separate_again else ["--again"] if again else [])
 
 
 class Job:
@@ -49,6 +50,7 @@ class Job:
         self.current: int | None = None
         self.ahead: dict | None = None        # separating the takes with close tracks before the first
         self.separation: dict | None = None   # a separation in flight
+        self.separated: dict[str, dict] = {}  # every track the run has separated or found separated, by its cache's name
         self.log: collections.deque[str] = collections.deque(maxlen=LOG_LINES)
         self.lines = 0                        # log lines so far, the dropped ones included
         self.saw_end = False
@@ -61,7 +63,7 @@ class Job:
     def _unit(take: str, preset: str) -> dict:
         return {"take": take, "profile": preset if preset not in ("", DEFAULT) else DEFAULT, "state": "pending", "frac": 0.0,
                 "stage": "", "key": "", "detail": "", "started": None, "seconds": None, "summary": None, "error": None,
-                "separated": False, "kept": False}
+                "separated": False, "kept": False, "part": 0.0, "chains": {}}
 
     # -- the run's events ------------------------------------------------------------------
 
@@ -72,6 +74,9 @@ class Job:
         elif ev == "prepare":
             self.ahead = {"take": e["take"], "i": e["i"], "n": e["n"]}
         elif ev == "separation":
+            made_here = self.separated.get(e["track"], {}).get("state") == "done"  # by this job: its stems found again
+            if not (made_here and e["state"] == "cached"):                         # at the take's turn are not "kept from an earlier run"
+                self.separated[e["track"]] = {"state": e["state"], "i": e.get("i", 0), "n": e.get("n", 0), "model": e.get("model", "")}
             if e["state"] in ("cached", "done"):
                 self.separation = None
             else:
@@ -80,10 +85,13 @@ class Job:
                     self.units[self.current]["separated"] = True
         elif ev == "unit" and e["i"] < len(self.units):
             self.current, self.ahead = e["i"], None
-            self.units[e["i"]] |= {"state": "running", "started": time.time()}
+            self.units[e["i"]] |= {"state": "running", "started": time.time(), "chains": {}, "part": 0.0}
         elif ev == "stage" and self.current is not None:
             self.units[self.current] |= {"frac": e["frac"], "stage": e["label"], "key": e.get("key", ""),
-                                         "detail": e.get("detail", "")}
+                                         "detail": e.get("detail", ""), "part": e.get("part", 0.0)}
+        elif ev == "chain" and self.current is not None:  # one stem's chain, from whichever process makes it
+            self.units[self.current]["chains"] = self.units[self.current]["chains"] | {
+                e["stem"]: {"state": e["state"], "frac": float(e.get("frac", 0.0))}}
         elif ev == "unit_done" and e["i"] < len(self.units):
             self.units[e["i"]] |= {"state": "done" if e["ok"] else "failed", "frac": 1.0, "seconds": e.get("seconds"),
                                    "summary": e.get("summary"), "error": e.get("error"), "stage": "", "key": "", "detail": "",
@@ -157,7 +165,7 @@ class Job:
                 "started": self.started, "elapsed": (self.ended or time.time()) - self.started, "eta": eta,
                 "frac": sum(u["frac"] for u in self.units) / max(1, len(self.units)),
                 "current": self.current, "ahead": self.ahead, "separation": self.separation,
-                "units": [dict(u) for u in self.units],
+                "separated": dict(self.separated), "units": [dict(u) for u in self.units],
                 "log": list(self.log)[max(0, since - first):], "lines": self.lines,
             }
 
@@ -174,9 +182,9 @@ class Runner:
         return self.job is not None and self.job.state == "running"
 
     def start(self, project: dict, takes: list[dict], profiles: list[str], ab: bool = False,
-              separate_only: bool = False, again: bool = False) -> Job:
+              separate_only: bool = False, again: bool = False, separate_again: bool = False) -> Job:
         """takes: the project's takes to run (name and room file); profiles: by name. again: also
-        what is already mastered with these settings."""
+        what is already mastered with these settings. separate_again: and their stems made again."""
         with self.lock:
             if self.running():
                 raise UserError("A job is already running. Wait for it, or cancel it.")
@@ -187,7 +195,7 @@ class Runner:
             cfg_path = Path(project["config"])
             job = Job(project, takes, profiles, separate_only)
             env = os.environ | {"REHEARSAL_PROGRESS": "1", "PYTHONUNBUFFERED": "1"}
-            cmd = self.make_command(cfg_path, [t["room"] for t in takes], profiles, ab, separate_only, again)
+            cmd = self.make_command(cfg_path, [t["room"] for t in takes], profiles, ab, separate_only, again, separate_again)
             job.log.append("$ " + " ".join(cmd[1:]))
             job.lines = 1
             try:

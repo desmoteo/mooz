@@ -1,0 +1,76 @@
+20 November 2026, RTX PRO 1000 (Blackwell, 8 GB), driver 580.178, PyTorch 2.14.1+cu130, audio-separator 0.47.0.
+TensorRT 11.5.0.63 (tensorrt-cu13, and tensorrt-cu12 for the last two lines), ONNX Runtime 1.32.0 (onnxruntime-gpu).
+One chunk of Biancaneve's room track (100 s to 130 s): (1, 801, 4100) into the core, masks out.
+
+== trt_core.py torch
+BS-Roformer-SW.ckpt: 30 s in 5.56 s, of which the core 5.06 s in 6 chunks (91 %); a chunk is (1, 801, 4100), overlap 2, 175 M weights, 12 blocks, 6 stems
+   float32                                     1618.0 ms a chunk
+   autocast float16 (before 20 November)        875.3 ms a chunk | from float32 -62.6 dB
+   autocast float16, 2 chunks at once           814.3 ms a chunk | from float32 -63.3 dB
+   autocast float16, 4 chunks at once           853.0 ms a chunk | from float32 -63.4 dB
+   autocast float16, blocks compiled (now)      464.9 ms a chunk | from float32 -63.9 dB
+   compiled, 2 chunks at once                   367.2 ms a chunk | from float32 -64.3 dB
+   compiled, 4 chunks at once                   393.9 ms a chunk | from float32 -64.5 dB
+   (the first compiled call: 8.8 s)
+model_bs_roformer_ep_317_sdr_12.9755.ckpt: 30 s in 14.45 s, of which the core 14.04 s in 12 chunks (97 %); a chunk is (1, 801, 4100), overlap 4, 160 M weights, 12 blocks, 1 stems
+   float32                                     2897.0 ms a chunk
+   autocast float16 (before 20 November)       1214.3 ms a chunk | from float32 -61.1 dB
+   autocast float16, 2 chunks at once          1200.4 ms a chunk | from float32 -61.1 dB
+   autocast float16, 4 chunks at once          1222.0 ms a chunk | from float32 -61.5 dB
+   autocast float16, blocks compiled (now)      699.5 ms a chunk | from float32 -62.1 dB
+   compiled, 2 chunks at once                   649.6 ms a chunk | from float32 -62.0 dB
+   compiled, 4 chunks at once                   661.7 ms a chunk | from float32 -62.6 dB
+   (the first compiled call: 8.0 s)
+
+== trt_core.py export (the new exporter, torch.onnx.export(dynamo=True), at the first attempt)
+BS-Roformer-SW:  float32 69 s, 679 MB | autocast 96 s, 675 MB | float16 78 s, 347 MB | float16x2 73 s, 347 MB | bfloat16 73 s, 347 MB
+ep 317:          float16 35 s, 313 MB | float16x2 34 s, 313 MB | bfloat16 35 s, 313 MB
+
+== trt_core.py trt (BS-Roformer-SW)
+TensorRT 11.5.0.63; PyTorch's autocast float16 is -62.6 dB from float32 on this chunk
+   float32: engine built in 54 s, 672 MB
+   float32      966.6 ms a chunk | from float32 -70.2 dB | engine's GPU memory 3.1 GB | loaded in 0.4 s
+   autocast: engine built in 50 s, 346 MB
+   autocast     420.2 ms a chunk | from float32 -56.3 dB | engine's GPU memory 0.4 GB | loaded in 0.2 s
+   float16: engine built in 48 s, 345 MB
+   float16      415.1 ms a chunk | from float32 -56.8 dB | engine's GPU memory 0.4 GB | loaded in 0.2 s
+   core_float16@5: engine built in 49 s, 345 MB
+   float16@5    412.4 ms a chunk | from float32 -56.1 dB | engine's GPU memory 0.4 GB | loaded in 0.2 s
+   core_float16x2: engine built in 49 s, 346 MB
+   float16x2    401.9 ms a chunk | from float32 -55.6 dB | engine's GPU memory 0.9 GB | loaded in 0.2 s
+   core_bfloat16: engine built in 47 s, 346 MB
+   bfloat16     321.8 ms a chunk | from float32 -44.1 dB | engine's GPU memory 0.4 GB | loaded in 0.2 s
+== trt_core.py trt (ep 317)
+   float16      607.0 ms a chunk | from float32 -53.3 dB | engine's GPU memory 0.4 GB | loaded in 0.2 s
+   core_bfloat16: engine built in 34 s, 316 MB
+   bfloat16     520.7 ms a chunk | from float32 -40.9 dB | engine's GPU memory 0.4 GB | loaded in 0.2 s
+
+== trt_core.py versus (in turn in one process, 4 rounds)
+BS-Roformer-SW
+   PyTorch, blocks compiled, a chunk at a time (now)     461.2 ms a chunk (427 to 465) | 1.00 of now
+   PyTorch, blocks compiled, two chunks at once          364.3 ms a chunk (361 to 365) | 0.79 of now
+   TensorRT float16, a chunk at a time                   400.9 ms a chunk (391 to 403) | 0.87 of now
+   TensorRT float16, two chunks at once                  403.5 ms a chunk (399 to 405) | 0.87 of now
+ep 317
+   PyTorch, blocks compiled, a chunk at a time (now)     678.0 ms a chunk (667 to 680) | 1.00 of now
+   PyTorch, blocks compiled, two chunks at once          645.3 ms a chunk (640 to 651) | 0.95 of now
+   TensorRT float16, a chunk at a time                   589.7 ms a chunk (589 to 592) | 0.87 of now
+   TensorRT float16, two chunks at once                  592.4 ms a chunk (589 to 595) | 0.87 of now
+
+== trt_core.py whole BS-Roformer-SW.ckpt float16 (the library's own separation of 30 s, the engine in the place of the model's core)
+   float32                         10.75 s
+   compiled blocks (now)            3.04 s | from float32, dB re each stem: {'bass': -66.6, 'drums': -63.2, 'vocals': -68.6, 'guitar': -66.6}
+   TensorRT engine (float16 )       2.90 s | from float32, dB re each stem: {'bass': -58.6, 'drums': -54.8, 'vocals': -60.5, 'guitar': -58.8}
+   the engine against now's stems: {'bass': -57.8, 'drums': -54.4, 'vocals': -59.7, 'guitar': -58.1}
+
+== trt_core.py ort (ONNX Runtime 1.32.0, CUDA provider, every node on the GPU, graph optimisation "all", tensors bound on the GPU)
+BS-Roformer-SW
+   float16     1091.7 ms a chunk | from float32 -62.2 dB | session made in 1 s
+   autocast    1134.5 ms a chunk | from float32 -63.1 dB | session made in 2 s
+   bfloat16    1096   ms a chunk | from float32 -44.0 dB   (bound by hand: the script's binding is for float16 and float32)
+   float32: out of GPU memory next to PyTorch in one process; not pursued
+
+== trt_plain.py (TensorRT 11.5.0.63 from tensorrt-cu12, no PyTorch in the process: the CUDA 12 build, for the
+   float16 attention regression the release notes of 10.13 name for CUDA 13.0 on Blackwell)
+BS-Roformer-SW   float16 390.1 ms a chunk (334 to 522) | from float32 -56.5 dB
+ep 317           float16 600.4 ms a chunk (545 to 641) | from float32 -52.7 dB

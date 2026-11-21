@@ -25,7 +25,7 @@ import numpy as np
 from scipy import signal
 from scipy.optimize import nnls
 
-from . import augment
+from . import augment, loudness
 
 NPER, HOP = 1024, 256
 DETECT = {"hihat": (6000.0, 14000.0), "cymbals": (3000.0, 14000.0)}  # where the stem's own hits are found
@@ -41,7 +41,7 @@ def _bands(f: np.ndarray, lo: float = 1200.0, hi: float = 16000.0) -> tuple[np.n
 
 def _spectra(x: np.ndarray, fs: float) -> tuple[np.ndarray, np.ndarray]:
     """Frequencies and the power spectrogram (bins x frames) of a stereo signal's mono."""
-    f, _, z = signal.stft(x.mean(axis=1).astype(np.float32), fs, nperseg=NPER, noverlap=NPER - HOP)
+    f, _, z = signal.stft(loudness.mono(x).astype(np.float32), fs, nperseg=NPER, noverlap=NPER - HOP)
     return f, (np.abs(z) ** 2).astype(np.float32)
 
 
@@ -52,7 +52,7 @@ def _norm(m: np.ndarray) -> np.ndarray:
 def _band_level(x: np.ndarray, fs: float, lo: float, hi: float, frames: np.ndarray, win_s: float = 0.05) -> float:
     """Median level (dB) in lo..hi over the given win_s windows."""
     h = int(win_s * fs)
-    b = signal.sosfiltfilt(signal.butter(4, [lo, hi], "band", fs=fs, output="sos"), x.mean(axis=1)) ** 2
+    b = signal.sosfiltfilt(signal.butter(4, [lo, hi], "band", fs=fs, output="sos"), loudness.mono(x)) ** 2
     n = len(b) // h
     lev = 10 * np.log10(b[: n * h].reshape(n, h).mean(axis=1) + 1e-20)
     return float(np.median(lev[frames[:n]])) if frames[:n].any() else float("nan")

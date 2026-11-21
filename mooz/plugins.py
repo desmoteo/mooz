@@ -52,7 +52,7 @@ def chowtape(x: np.ndarray, fs: float, cfg: dict) -> tuple[np.ndarray, dict]:
     rms = float(np.sqrt(np.mean(x * x))) + 1e-20
     cal = 10 ** (cfg["level_db"] / 20) / rms
     # one call for the whole song: pedalboard's chunked streaming does not give the same result
-    y = p.process(np.ascontiguousarray((x * cal).T, dtype=np.float32), fs).T.astype(np.float64)
+    y = p.process(np.ascontiguousarray((x * cal).T, dtype=np.float32), fs).T.astype(x.dtype)
     # its oversampling filters delay it by a few samples: line it up again (it may sit next to
     # other stems that did not go through it)
     a, b = x.mean(axis=1)[: int(30 * fs)], y.mean(axis=1)[: int(30 * fs)]
@@ -60,9 +60,9 @@ def chowtape(x: np.ndarray, fs: float, cfg: dict) -> tuple[np.ndarray, dict]:
     lag = max(lags, key=lambda d: float(np.dot(a[: len(a) - max(d, 0)], b[max(d, 0) :]) if d >= 0
                                          else np.dot(a[-d:], b[: len(b) + d])))
     if lag > 0:
-        y = np.concatenate([y[lag:], np.zeros((lag, y.shape[1]))])
+        y = np.concatenate([y[lag:], np.zeros((lag, y.shape[1]), y.dtype)])
     elif lag < 0:
-        y = np.concatenate([np.zeros((-lag, y.shape[1])), y[:lag]])
+        y = np.concatenate([np.zeros((-lag, y.shape[1]), y.dtype), y[:lag]])
     gain = rms / (float(np.sqrt(np.mean(y * y))) + 1e-20)
     # harmonics: the share of the output that is not a (phase-shifted) copy of the input
     a_, b_ = x.mean(axis=1)[::2], y.mean(axis=1)[::2]

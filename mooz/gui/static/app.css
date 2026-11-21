@@ -230,6 +230,39 @@ h4 { font: 600 0.87rem var(--body); color: var(--lilac); margin: 1.3rem 0 0.4rem
 .gbox.unused, .graph.picked .gbox.off { opacity: 0.45; }
 .gbox.cur rect { stroke: var(--ring0); stroke-width: 2; stroke-dasharray: none; }
 .gbox.sel rect { stroke: var(--ring1); stroke-width: 2; }
+
+/* the take being made, on its graph (the job's panel), and the same marks on the take's own graph */
+#job-live:empty { display: none; }
+details.live { margin-top: 0.9rem; border-top: 1px solid var(--line); padding-top: 0.6rem; }
+details.live > summary { cursor: pointer; }
+details.live > summary strong { font-weight: 600; }
+.live-chip { display: inline-block; margin-left: 0.7rem; }
+.live-chip .num { color: var(--ring0); }
+.graph.live { min-width: 70rem; margin-top: 0.2rem; }
+.graph.live .gbox { cursor: default; }
+.graph.live .gbox:hover rect.gframe { fill: var(--plum-up); }
+.graph.live .gbox.step:hover rect.gframe { fill: var(--night); }
+.gbox rect.gfill { fill: var(--ring0); stroke: none; opacity: 0.42; pointer-events: none; transition: width 0.6s ease; }
+.graph.live .gbox.l-waiting { opacity: 0.4; }
+.gbox.l-active rect.gframe, .graph:not(.live) .gbox.l-active rect { stroke: var(--ring0); stroke-width: 2; stroke-dasharray: none; }
+.gbox.l-active text { fill: var(--ink); font-weight: 600; }
+.graph.live .gbox.l-unknown rect.gframe, .graph:not(.live) .gbox.l-active rect { animation: pulse 1.6s ease-in-out infinite; }
+.graph.live .gbox.l-done rect.gframe, .graph.live .gbox.l-kept rect.gframe { stroke: var(--good); stroke-dasharray: none; }
+.graph.live .gbox.l-kept rect.gframe { stroke-dasharray: 2 3; }
+.graph.live .gbox.l-done text, .graph.live .gbox.l-kept text { fill: var(--ink); }
+.graph.live .gbox.l-skipped { opacity: 0.3; }
+.graph.live .gbox.l-skipped text { text-decoration: line-through; }
+.graph.live .gbox.l-stopped rect.gframe { stroke: var(--bad); stroke-width: 2; stroke-dasharray: none; }
+.graph.live .garrow path { opacity: 0.22; }
+.graph.live .garrow.l-done path { opacity: 0.5; }
+.graph.live .garrow.path path { stroke: var(--ring0); stroke-width: 1.8; opacity: 0.9; }
+.live-key { margin: 0.2rem 0 0; font-size: 0.82rem; }
+.live-key i { display: inline-block; width: 0.9rem; height: 0.55rem; border-radius: 0.3rem; border: 1.5px solid var(--line); margin: 0 0.3rem 0 0.9rem; vertical-align: baseline; }
+.live-key i:first-child { margin-left: 0; }
+.live-key .k-active { border-color: var(--ring0); background: color-mix(in srgb, var(--ring0) 42%, transparent); }
+.live-key .k-done { border-color: var(--good); }
+.live-key .k-kept { border-color: var(--good); border-style: dotted; }
+.live-key .k-waiting { opacity: 0.45; }
 .gbox.on rect { fill: url(#ring); stroke: none; }
 .gbox.on text { fill: var(--on-ring); }
 .gbox.on .tri { display: none; }

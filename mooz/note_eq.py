@@ -32,7 +32,7 @@ from __future__ import annotations
 import numpy as np
 from scipy import ndimage, signal
 
-from .loudness import EPS, filtfilt
+from .loudness import EPS, filtfilt, mono as _mono
 
 BLOCK_S = 30.0
 
@@ -181,7 +181,7 @@ def _attack_eq(y: np.ndarray, fs: float, cfg: dict, onsets: np.ndarray, stats: d
     edges = np.array(a["bands_hz"], float)
     edges = edges[edges < fs / 2]
     nb = len(edges) - 1
-    mono = y.mean(axis=1)
+    mono = _mono(y)
     n = len(mono)
     att = a["ms"] / 1000
 
@@ -267,7 +267,7 @@ def note_eq(x: np.ndarray, fs: float, cfg: dict, pitch_cfg: dict, parts: dict | 
     old_pitch = (np.where(voiced & (prob >= pitch_cfg["voiced_prob"]) & np.isfinite(f0), f0, np.nan), t_p)
     vf = voiced & np.isfinite(f0)
     n = len(x)
-    mono = x.mean(axis=1)
+    mono = _mono(x)
     nfft = cfg["nfft"]
     hop = nfft // 16
     df = fs / nfft

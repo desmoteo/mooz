@@ -11,7 +11,7 @@ import numpy as np
 from scipy import signal
 from scipy.ndimage import uniform_filter1d
 
-from .loudness import EPS, filtfilt
+from .loudness import EPS, filtfilt, mono
 
 # --- mains hum ---------------------------------------------------------------------------------
 
@@ -170,7 +170,7 @@ def _band_bins(fs: float, band: tuple[float, float]) -> np.ndarray:
 
 
 def _mono_band_mag(x: np.ndarray, fs: float, bins: np.ndarray) -> np.ndarray:
-    _, _, z = signal.stft(x.mean(axis=1), fs, nperseg=_NFFT, noverlap=_NFFT - _HOP)
+    _, _, z = signal.stft(mono(x), fs, nperseg=_NFFT, noverlap=_NFFT - _HOP)
     return np.abs(z[bins]).astype(np.float32)
 
 
@@ -249,10 +249,10 @@ def own_hits(x: np.ndarray, fs: float, name: str, window_ms: float) -> np.ndarra
 
     if name in ("snare", "toms"):
         lo = 150.0 if name == "snare" else 70.0
-        env = dynamics.envelope(np.abs(_band(x, fs, lo, 400.0).mean(axis=1)), fs, 1.0, 50.0)
+        env = dynamics.envelope(np.abs(_band(mono(x), fs, lo, 400.0)), fs, 1.0, 50.0)
         pk, _ = signal.find_peaks(env, height=np.percentile(env, 92), distance=int(0.1 * fs))
     else:
-        band = np.abs(_band(x, fs, 4000.0, 16000.0).mean(axis=1))
+        band = np.abs(_band(mono(x), fs, 4000.0, 16000.0))
         fast, slow = dynamics.envelope(band, fs, 0.5, 20.0), dynamics.envelope(band, fs, 15.0, 20.0)
         onset = 20 * np.log10((fast + EPS) / (slow + EPS))
         lev = 20 * np.log10(fast + EPS)

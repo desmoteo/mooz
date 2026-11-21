@@ -17,17 +17,21 @@ song's usual fundamental-to-note ratio.
 
 from __future__ import annotations
 
+import hashlib
+import os
+from pathlib import Path
+
 import numpy as np
 from scipy import signal
 
 from . import dynamics
-from .loudness import EPS, filtfilt
+from .loudness import EPS, filtfilt, mono as _mono
 
 # --- drums -------------------------------------------------------------------------------------
 
 
 def _band_env(x: np.ndarray, fs: float, lo: float, hi: float) -> np.ndarray:
-    band = filtfilt(signal.butter(2, [lo, hi], "bandpass", fs=fs, output="sos"), x).mean(axis=1)
+    band = filtfilt(signal.butter(2, [lo, hi], "bandpass", fs=fs, output="sos"), _mono(x))
     return dynamics.envelope(np.abs(band), fs, 1.0, 50.0)
 
 
@@ -337,7 +341,7 @@ def cymbal_hits(x: np.ndarray, fs: float, lo: float, hi: float, rise_db: float =
     30 ms. A crash's long, noisy decay fluctuates by far less, so it is not taken for new hits
     (as peak picking on the envelope did), and quieter hits after a loud one are still found."""
     hop = int(0.005 * fs)
-    band = filtfilt(signal.butter(4, [lo, hi], "bandpass", fs=fs, output="sos"), x).mean(axis=1)
+    band = filtfilt(signal.butter(4, [lo, hi], "bandpass", fs=fs, output="sos"), _mono(x))
     m = len(band) // hop * hop
     db = 10 * np.log10(np.mean(band[:m].reshape(-1, hop) ** 2, axis=1) + EPS)
     prev = np.array([db[max(0, i - 6) : i].min() if i else db[0] for i in range(len(db))])  # the lowest over 30 ms before
@@ -404,16 +408,44 @@ def cymbal_augment(x: np.ndarray, fs: float, cfg: dict) -> tuple[np.ndarray, dic
 # --- bass ----------------------------------------------------------------------------------------
 
 
+# Where pyin's answers are kept from run to run (the pipeline sets it while a chain is made: the take's kept
+# chains). The tracker is nine seconds of the bass's chain and reads only the stem, so a change to the bass's
+# settings, or a second profile, finds its answer there. The last PITCH_KEPT stay.
+PITCH_DIR: Path | None = None
+PITCH_KEPT = 6
+
+
 def pyin(x: np.ndarray, fs: float, cfg: dict) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """pyin's raw output on the bass (f0, voiced flag, voiced probability, frame times),
     as bass_pitch sets it up."""
     import librosa
 
-    mono = x.mean(axis=1)
+    mono = _mono(x)
     sr = 4000
-    lo = signal.resample_poly(filtfilt(signal.butter(4, 600, "low", fs=fs, output="sos"), mono), sr, int(fs))
-    f0, voiced, prob = librosa.pyin(lo.astype(np.float32), fmin=cfg["fmin_hz"], fmax=cfg["fmax_hz"], sr=sr,
-                                    frame_length=2048, hop_length=40, center=True)
+    lo = signal.resample_poly(filtfilt(signal.butter(4, 600, "low", fs=fs, output="sos"), mono), sr, int(fs)).astype(np.float32)
+    kept = None
+    if PITCH_DIR is not None:  # the tracker reads nothing but these samples and these settings: its answer is kept under them
+        told = repr((cfg["fmin_hz"], cfg["fmax_hz"], sr, 2048, 40, librosa.__version__)).encode()
+        kept = PITCH_DIR / f"{hashlib.blake2b(lo.tobytes() + told, digest_size=12).hexdigest()}.npz"
+        try:
+            with np.load(kept) as z:
+                f0, voiced, prob = z["f0"], z["voiced"], z["prob"]
+            os.utime(kept)
+            return f0, voiced, prob, np.arange(len(f0)) * 40 / sr
+        except (OSError, ValueError, KeyError):
+            pass
+    f0, voiced, prob = librosa.pyin(lo, fmin=cfg["fmin_hz"], fmax=cfg["fmax_hz"], sr=sr, frame_length=2048, hop_length=40,
+                                    center=True)
+    if kept is not None:  # (a folder that cannot be written costs the next run its nine seconds, nothing else)
+        try:
+            kept.parent.mkdir(parents=True, exist_ok=True)
+            tmp = kept.with_name(f".{os.getpid()}-{kept.name}")
+            np.savez(tmp, f0=f0, voiced=voiced, prob=prob)
+            os.replace(tmp, kept)
+            for old in sorted(kept.parent.glob("*.npz"), key=lambda f: f.stat().st_mtime)[:-PITCH_KEPT]:
+                old.unlink(missing_ok=True)
+        except OSError:
+            pass
     return f0, voiced, prob, np.arange(len(f0)) * 40 / sr
 
 
@@ -503,7 +535,7 @@ def bass_fundamental(x: np.ndarray, fs: float, cfg: dict, pitch: tuple[np.ndarra
     ok = np.isfinite(f0)
     if ok.sum() < 50:
         return x, {"voiced_pct": round(100 * float(ok.mean()), 0), "note": "no stable pitch"}, np.zeros(1)
-    mono = x.mean(axis=1)
+    mono = _mono(x)
     t = np.arange(len(x)) / fs
     lf = np.interp(t, t_f[ok], np.log(f0[ok]))  # held across unvoiced gaps
     f_inst = np.exp(lf)
@@ -554,7 +586,7 @@ def bass_fundamental(x: np.ndarray, fs: float, cfg: dict, pitch: tuple[np.ndarra
         want = want * 10 ** (cfg["attack_db"] * env / 20)
         stats["attack_db"] = cfg["attack_db"]
     add = (want - amp) * mask * np.cos(phi + np.angle(c))
-    y = x + add[:, None]
+    y = x + add.astype(x.dtype, copy=False)[:, None]
     gain_db = 20 * np.log10((amp + np.abs(want - amp) * mask + EPS) / (amp + EPS))
     # the fundamental's energy change where the pitch was found (not a mean of dB values: faint
     # notes would dominate it)

@@ -1,0 +1,965 @@
+diff --color -ruN -x __pycache__ /tmp/claude-1001/-media-secure-storage-Personal-Circhi/1d8dd9b8-8da2-47f5-adaf-4f968af2583f/scratchpad/speed/final2/mooz/augment.py mooz/augment.py
+--- /tmp/claude-1001/-media-secure-storage-Personal-Circhi/1d8dd9b8-8da2-47f5-adaf-4f968af2583f/scratchpad/speed/final2/mooz/augment.py	2026-11-19 19:03:48.054628670 +0100
++++ mooz/augment.py	2026-11-20 09:53:17.133745311 +0100
+@@ -17,6 +17,10 @@
+ 
+ from __future__ import annotations
+ 
++import hashlib
++import os
++from pathlib import Path
++
+ import numpy as np
+ from scipy import signal
+ 
+@@ -404,6 +408,13 @@
+ # --- bass ----------------------------------------------------------------------------------------
+ 
+ 
++# Where pyin's answers are kept from run to run (the pipeline sets it while a chain is made: the take's kept
++# chains). The tracker is nine seconds of the bass's chain and reads only the stem, so a change to the bass's
++# settings, or a second profile, finds its answer there. The last PITCH_KEPT stay.
++PITCH_DIR: Path | None = None
++PITCH_KEPT = 6
++
++
+ def pyin(x: np.ndarray, fs: float, cfg: dict) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+     """pyin's raw output on the bass (f0, voiced flag, voiced probability, frame times),
+     as bass_pitch sets it up."""
+@@ -411,9 +422,30 @@
+ 
+     mono = _mono(x)
+     sr = 4000
+-    lo = signal.resample_poly(filtfilt(signal.butter(4, 600, "low", fs=fs, output="sos"), mono), sr, int(fs))
+-    f0, voiced, prob = librosa.pyin(lo.astype(np.float32), fmin=cfg["fmin_hz"], fmax=cfg["fmax_hz"], sr=sr,
+-                                    frame_length=2048, hop_length=40, center=True)
++    lo = signal.resample_poly(filtfilt(signal.butter(4, 600, "low", fs=fs, output="sos"), mono), sr, int(fs)).astype(np.float32)
++    kept = None
++    if PITCH_DIR is not None:  # the tracker reads nothing but these samples and these settings: its answer is kept under them
++        told = repr((cfg["fmin_hz"], cfg["fmax_hz"], sr, 2048, 40, librosa.__version__)).encode()
++        kept = PITCH_DIR / f"{hashlib.blake2b(lo.tobytes() + told, digest_size=12).hexdigest()}.npz"
++        try:
++            with np.load(kept) as z:
++                f0, voiced, prob = z["f0"], z["voiced"], z["prob"]
++            os.utime(kept)
++            return f0, voiced, prob, np.arange(len(f0)) * 40 / sr
++        except (OSError, ValueError, KeyError):
++            pass
++    f0, voiced, prob = librosa.pyin(lo, fmin=cfg["fmin_hz"], fmax=cfg["fmax_hz"], sr=sr, frame_length=2048, hop_length=40,
++                                    center=True)
++    if kept is not None:  # (a folder that cannot be written costs the next run its nine seconds, nothing else)
++        try:
++            kept.parent.mkdir(parents=True, exist_ok=True)
++            tmp = kept.with_name(f".{os.getpid()}-{kept.name}")
++            np.savez(tmp, f0=f0, voiced=voiced, prob=prob)
++            os.replace(tmp, kept)
++            for old in sorted(kept.parent.glob("*.npz"), key=lambda f: f.stat().st_mtime)[:-PITCH_KEPT]:
++                old.unlink(missing_ok=True)
++        except OSError:
++            pass
+     return f0, voiced, prob, np.arange(len(f0)) * 40 / sr
+ 
+ 
+@@ -554,7 +586,7 @@
+         want = want * 10 ** (cfg["attack_db"] * env / 20)
+         stats["attack_db"] = cfg["attack_db"]
+     add = (want - amp) * mask * np.cos(phi + np.angle(c))
+-    y = x + add[:, None]
++    y = x + add.astype(x.dtype, copy=False)[:, None]
+     gain_db = 20 * np.log10((amp + np.abs(want - amp) * mask + EPS) / (amp + EPS))
+     # the fundamental's energy change where the pitch was found (not a mean of dB values: faint
+     # notes would dominate it)
+diff --color -ruN -x __pycache__ /tmp/claude-1001/-media-secure-storage-Personal-Circhi/1d8dd9b8-8da2-47f5-adaf-4f968af2583f/scratchpad/speed/final2/mooz/compiled.py mooz/compiled.py
+--- /tmp/claude-1001/-media-secure-storage-Personal-Circhi/1d8dd9b8-8da2-47f5-adaf-4f968af2583f/scratchpad/speed/final2/mooz/compiled.py	2026-11-19 17:29:06.808932197 +0100
++++ mooz/compiled.py	2026-11-20 09:40:41.195175889 +0100
+@@ -19,3 +19,15 @@
+             if s > e:
+                 e = s
+             out[k, i] = e
++
++
++@numba.njit(cache=True, nogil=True)
++def smooth(v, a, out):
++    """Per row, a one-pole low-pass: out[i] = (1 - a) * v[i] + a * out[i - 1], from rest
++    (dynamics.attack_smooth; the same samples as scipy's lfilter([1 - a], [1, -a]) gave)."""
++    b = 1.0 - a
++    for k in range(v.shape[0]):
++        y = 0.0
++        for i in range(v.shape[1]):
++            y = b * v[k, i] + a * y
++            out[k, i] = y
+diff --color -ruN -x __pycache__ /tmp/claude-1001/-media-secure-storage-Personal-Circhi/1d8dd9b8-8da2-47f5-adaf-4f968af2583f/scratchpad/speed/final2/mooz/defaults.toml mooz/defaults.toml
+--- /tmp/claude-1001/-media-secure-storage-Personal-Circhi/1d8dd9b8-8da2-47f5-adaf-4f968af2583f/scratchpad/speed/final2/mooz/defaults.toml	2026-11-19 18:27:43.302403577 +0100
++++ mooz/defaults.toml	2026-11-20 09:49:25.581994058 +0100
+@@ -1012,6 +1012,12 @@
+                            # that puts its highest peak at the ceiling. Nothing clipped or limited: all its punch, and
+                            # quieter than the master by what the master step takes off the peaks
+ 
++[audio]                    # the precision the samples are held in from the stems' stage to the master. 32: half the
++float = 32                 # memory and a tenth less time; the stems come out the same down to the floor of a 24-bit
++                           # file (docs/SPEED.md). What measures and decides (loudness, trim, hum, the song's character,
++                           # hit triggers, gain curves) and the arithmetic of the IIR filters stay in 64 bits either way.
++                           # 64: everything in 64 bits, as until November 2026
++
+ [chains]                   # each stem's chain kept from run to run (chaincache.py): a change to the bus, the balance, the
+ enabled = true             # loudness or another stem's chain does not run this stem's chain again (two thirds of a take's
+                            # time). A kept chain is used only if everything it reads is the same: the code, the stem, the
+diff --color -ruN -x __pycache__ /tmp/claude-1001/-media-secure-storage-Personal-Circhi/1d8dd9b8-8da2-47f5-adaf-4f968af2583f/scratchpad/speed/final2/mooz/dynamics.py mooz/dynamics.py
+--- /tmp/claude-1001/-media-secure-storage-Personal-Circhi/1d8dd9b8-8da2-47f5-adaf-4f968af2583f/scratchpad/speed/final2/mooz/dynamics.py	2026-11-19 17:29:06.823225996 +0100
++++ mooz/dynamics.py	2026-11-20 09:45:35.146459222 +0100
+@@ -14,7 +14,7 @@
+ from scipy import signal
+ from scipy.ndimage import maximum_filter1d, uniform_filter1d
+ 
+-from . import stereo
++from . import expr, stereo
+ from .loudness import EPS, filtfilt, oversampled_chunks, power, true_peak_envelope
+ 
+ 
+@@ -32,8 +32,15 @@
+ 
+ 
+ def attack_smooth(v: np.ndarray, attack_ms: float, fs: float, axis: int = -1) -> np.ndarray:
+-    a = np.exp(-1000.0 / (attack_ms * fs))
+-    return signal.lfilter([1 - a], [1, -a], v, axis=axis)
++    """One-pole smoothing (along axis) with the time constant attack_ms: one compiled pass (it was
++    scipy's lfilter, three times slower and the same to the last bit)."""
++    a = float(np.exp(-1000.0 / (attack_ms * fs)))
++    rows = np.ascontiguousarray(np.moveaxis(np.asarray(v, dtype=np.float64), axis, -1))
++    out = np.empty_like(rows)
++    from . import compiled  # (numba: loaded at the first call)
++
++    compiled.smooth(rows.reshape(-1, rows.shape[-1]), a, out.reshape(-1, rows.shape[-1]))
++    return np.moveaxis(out, -1, axis)
+ 
+ 
+ def envelope(a: np.ndarray, fs: float, attack_ms: float, release_ms: float) -> np.ndarray:
+@@ -46,7 +53,7 @@
+     over = level_db - threshold_db
+     slope = 1.0 - 1.0 / ratio
+     knee = max(knee_db, 1e-6)
+-    gr = np.where(over > knee / 2, slope * over, slope * (over + knee / 2) ** 2 / (2 * knee))
++    gr = expr.knee(over, slope, knee)
+     gr[over < -knee / 2] = 0.0
+     return gr
+ 
+@@ -57,7 +64,24 @@
+     n = int(round(rms_ms * 1e-3 * fs))
+     if n > 1:
+         p = np.maximum(uniform_filter1d(p, n), 0.0)  # running mean can dip a hair below zero
+-    return 10 * np.log10(p + EPS)
++    return expr.power_db(p, EPS)
++
++
++def _reduction(lev: np.ndarray, use, fs: float, threshold_pct: float, ratio: float, knee_db: float,
++               attack_ms: float, release_ms: float) -> tuple[np.ndarray, float]:
++    """The smoothed gain reduction (dB) of a compressor for the level lev, and its threshold."""
++    threshold = float(np.percentile(lev[use][::16], threshold_pct))
++    gr = gain_reduction(lev, threshold, ratio, knee_db)
++    return attack_smooth(release_hold(gr, release_ms, fs), attack_ms, fs), threshold
++
++
++def average_reduction(lev: np.ndarray, fs: float, *, threshold_pct: float, ratio: float, knee_db: float, attack_ms: float,
++                      release_ms: float, active: np.ndarray | None = None, **_) -> float:
++    """compress()'s avg_gr_db for a signal of level lev, without the signal: all a search for the
++    threshold needs. The level is the same at every step of such a search, and no gain is applied."""
++    use = active if active is not None and active.any() else slice(None)
++    gr, _ = _reduction(lev, use, fs, threshold_pct, ratio, knee_db, attack_ms, release_ms)
++    return round(float(gr[use].mean()), 2)
+ 
+ 
+ def compress(
+@@ -72,20 +96,20 @@
+     rms_ms: float,
+     active: np.ndarray | None = None,
+     auto_makeup: bool = False,
++    level: np.ndarray | None = None,
+ ) -> tuple[np.ndarray, np.ndarray, dict]:
+     """Compress x. The threshold sits at the threshold_pct percentile of the
+     signal's own level (over active samples), so a setting compresses the same
+-    share of the song regardless of how hot it was recorded.
++    share of the song regardless of how hot it was recorded. level: x's level
++    (level_db with this rms_ms), where the caller has it already.
+ 
+     auto_makeup restores the original energy, i.e. evens out dynamics without
+     changing the long-term level (used per band so the EQ'd balance is kept).
+     """
+-    lev = level_db(x, fs, rms_ms)
++    lev = level_db(x, fs, rms_ms) if level is None else level
+     use = active if active is not None and active.any() else slice(None)
+-    threshold = float(np.percentile(lev[use][::16], threshold_pct))
+-    gr = gain_reduction(lev, threshold, ratio, knee_db)
+-    gr = attack_smooth(release_hold(gr, release_ms, fs), attack_ms, fs)
+-    y = x * (10 ** (-gr / 20))[:, None]
++    gr, threshold = _reduction(lev, use, fs, threshold_pct, ratio, knee_db, attack_ms, release_ms)
++    y = expr.gained(x, -gr)
+     makeup = 0.0
+     if auto_makeup:
+         makeup = float(10 * np.log10((np.sum(x * x) + EPS) / (np.sum(y * y) + EPS)))
+@@ -189,13 +213,13 @@
+     ramped in with a moving average of the same length, so the gain is fully
+     down by the time each peak arrives; then it is released exponentially.
+     """
+-    need = np.maximum(0.0, 20 * np.log10(true_peak_envelope(x, factor) + EPS) - ceiling_db)
++    need = np.maximum(0.0, expr.db(true_peak_envelope(x, factor), EPS) - ceiling_db)
+     la = max(2, int(round(lookahead_ms * 1e-3 * fs)) // 2 * 2)  # even: exact forward window
+     held = maximum_filter1d(need, size=la + 1, origin=-(la // 2), mode="constant", cval=0.0)
+     c = np.concatenate([np.zeros(la + 1), np.cumsum(held)])
+     ramped = (c[la + 1 :] - c[: len(held)]) / (la + 1)
+     gr = release_hold(ramped, release_ms, fs)
+-    y = x * (10 ** (-gr / 20))[:, None]
++    y = expr.gained(x, -gr)
+     return y, gr, {
+         "max_gr_db": round(float(gr.max()), 2),
+         "limited_pct": round(100 * float(np.mean(gr > 0.1)), 2),
+diff --color -ruN -x __pycache__ /tmp/claude-1001/-media-secure-storage-Personal-Circhi/1d8dd9b8-8da2-47f5-adaf-4f968af2583f/scratchpad/speed/final2/mooz/effects.py mooz/effects.py
+--- /tmp/claude-1001/-media-secure-storage-Personal-Circhi/1d8dd9b8-8da2-47f5-adaf-4f968af2583f/scratchpad/speed/final2/mooz/effects.py	2026-11-19 19:03:48.054763772 +0100
++++ mooz/effects.py	2026-11-20 09:56:19.745944172 +0100
+@@ -18,7 +18,7 @@
+ from scipy import signal
+ from scipy.ndimage import maximum_filter1d, uniform_filter1d
+ 
+-from . import dynamics, eq, loudness, stereo
++from . import dynamics, eq, expr, loudness, stereo
+ from .loudness import EPS, filtfilt
+ 
+ 
+@@ -70,7 +70,7 @@
+             gr = -((threshold - rel).clip(0) * (1 - 1 / b["ratio"])).clip(0, b["max_boost_db"]) * gate * present
+             gr = -dynamics.attack_smooth(dynamics.release_hold(-gr, b.get("release_ms", 120.0), fs),
+                                          b.get("attack_ms", 20.0), fs)
+-            x = x + (10 ** (-gr / 20) - 1)[:, None] * band
++            x = x + expr.times(band, expr.linear(-gr) - 1)
+             stats.append({"freq_hz": b["freq_hz"], "mode": "boost", "avg_cut_db": round(float(gr[use].mean()), 2),
+                           "max_cut_db": round(float(gr.min()), 2)})
+             traces.append(dynamics.decimate(gr, fs, np.min))
+@@ -78,7 +78,7 @@
+         threshold = float(np.median(rel[use][::16])) + b["threshold_db"]
+         gr = dynamics.gain_reduction(rel, threshold, b["ratio"], 6.0).clip(0, b["max_cut_db"]) * gate
+         gr = dynamics.attack_smooth(dynamics.release_hold(gr, b.get("release_ms", 80.0), fs), b.get("attack_ms", 2.0), fs)
+-        x = x - (1 - 10 ** (-gr / 20))[:, None] * band
++        x = x - expr.times(band, 1 - expr.linear(-gr))
+         stats.append({"freq_hz": b["freq_hz"], "avg_cut_db": round(float(gr[use].mean()), 2),
+                       "max_cut_db": round(float(gr.max()), 2)})
+         traces.append(dynamics.decimate(gr, fs))
+@@ -161,8 +161,8 @@
+     fast = dynamics.envelope(a, fs, 0.5, 30.0)
+     slow = dynamics.envelope(a, fs, 15.0, 30.0)
+     long = dynamics.envelope(a, fs, 0.5, 300.0)
+-    onset = 20 * np.log10((fast + EPS) / (slow + EPS)).clip(0)
+-    tail = 20 * np.log10((long + EPS) / (fast + EPS)).clip(0)
++    onset = expr.ratio_db(fast, slow, EPS).clip(0)
++    tail = expr.ratio_db(long, fast, EPS).clip(0)
+     g = (attack * onset + sustain * tail).clip(-max_db, max_db)
+     return dynamics.attack_smooth(g, 1.0, fs)
+ 
+@@ -179,7 +179,7 @@
+     if not crossovers_hz:
+         g = _shape(x, fs, float(attack), float(sustain), max_db)
+         stats = {"max_boost_db": round(float(g.max()), 2), "max_cut_db": round(float(-g.min()), 2)}
+-        return x * (10 ** (g / 20))[:, None], stats, {"boost": dynamics.decimate(g, fs, np.max),
++        return expr.gained(x, g), stats, {"boost": dynamics.decimate(g, fs, np.max),
+                                                       "cut": dynamics.decimate(g, fs, np.min)}
+     n = len(crossovers_hz) + 1
+     if len(attack) != n or len(sustain) != n:
+@@ -190,7 +190,7 @@
+     edges = [0.0, *sorted(crossovers_hz), fs / 2]
+     for i, (band, a, su) in enumerate(zip(dynamics.split_bands(x, fs, crossovers_hz), attack, sustain)):
+         g = _shape(band, fs, a, su, max_db)
+-        out += band * (10 ** (g / 20))[:, None]
++        out += expr.gained(band, g)
+         b, c = dynamics.decimate(g, fs, np.max), dynamics.decimate(g, fs, np.min)
+         boost = b if boost is None else np.maximum(boost, b)
+         cut = c if cut is None else np.minimum(cut, c)
+@@ -251,7 +251,7 @@
+         g[a:b] = np.where(np.abs(seg) > np.abs(g[a:b]), seg, g[a:b])  # overlapping hits: strongest wins
+     g = dynamics.attack_smooth(g, 0.5, fs)
+     low = filtfilt(signal.butter(2, cfg["fmax_hz"], "low", fs=fs, output="sos"), x)
+-    y = x + (10 ** (g / 20) - 1)[:, None] * low
++    y = x + expr.times(low, expr.linear(g) - 1)
+     stats = {"hits": int(len(hits)), "punch_db": cfg["punch_db"], "tail_db": cfg["tail_db"]}
+     return y, stats, {"boost": dynamics.decimate(g, fs, np.max), "cut": dynamics.decimate(g, fs, np.min)}
+ 
+@@ -279,7 +279,7 @@
+     """0..1 per sample: how strongly a hit is happening in the lo..hi band of x
+     (1 within 12 dB of the loudest hits, 0 more than 12 dB below them)."""
+     band = filtfilt(signal.butter(2, [lo, hi], "bandpass", fs=fs, output="sos"), loudness.mono(x))
+-    env_db = 20 * np.log10(dynamics.envelope(np.abs(band), fs, 1.0, 40.0) + EPS)
++    env_db = expr.db(dynamics.envelope(np.abs(band), fs, 1.0, 40.0), EPS)
+     top = np.percentile(env_db, 99)
+     return ((env_db - (top - 12)) / 12).clip(0, 1).astype(np.float32)
+ 
+@@ -305,7 +305,7 @@
+     snare-wire rattle the kick sets off in the hi-hat stem."""
+     gr = trigger.astype(np.float64) * depth_db
+     gr = dynamics.attack_smooth(dynamics.release_hold(gr, release_ms, fs), 2.0, fs)
+-    y = x - (1 - 10 ** (-gr / 20))[:, None] * _band(x, fs, fmin_hz, fmax_hz)
++    y = x - expr.times(_band(x, fs, fmin_hz, fmax_hz), 1 - expr.linear(-gr))
+     return y, {"max_db": round(float(gr.max()), 2), "avg_db": round(float(gr.mean()), 2)}, dynamics.decimate(gr, fs)
+ 
+ 
+@@ -318,21 +318,21 @@
+     # along with the bass only swells (and opens a level-driven gate only partly)
+     band = np.abs(_band(loudness.mono(x), fs, cfg["fmin_hz"], cfg["fmax_hz"]))
+     fast, slow = dynamics.envelope(band, fs, 0.5, 20.0), dynamics.envelope(band, fs, 10.0, 40.0)
+-    lev = 20 * np.log10(fast + EPS)
+-    onset = (20 * np.log10((fast + EPS) / (slow + EPS)) > 6.0) & (lev > np.percentile(lev, 99.5) - 24.0)
++    lev = expr.db(fast, EPS)
++    onset = (expr.ratio_db(fast, slow, EPS) > 6.0) & (lev > np.percentile(lev, 99.5) - 24.0)
+     open_ = dynamics.release_hold(np.maximum(trig, onset.astype(np.float64)), cfg["release_ms"], fs)
+     open_ = np.minimum(open_ * 2.0, 1.0)  # fully open on all but faint hits
+     la = max(2, int(0.005 * fs)) // 2 * 2  # look 5 ms ahead so the gate is open before the attack
+     open_ = maximum_filter1d(open_, size=la + 1, origin=-(la // 2), mode="nearest")
+     open_ = dynamics.attack_smooth(open_, 1.0, fs)
+     gr = cfg["depth_db"] * (1 - open_)
+-    y = x * (10 ** (-gr / 20))[:, None]
++    y = expr.gained(x, -gr)
+     if cfg.get("buzz_extra_db", 0.0) > 0:
+         # the wires' buzz band goes further down between hits (it is all buzz there); the hit,
+         # its body and its own wire decay (while the gate is open) are untouched
+         extra = cfg["buzz_extra_db"] * (1 - open_)
+         band = _band(y, fs, *cfg.get("buzz_band_hz", (1200.0, 12000.0)))
+-        y = y - (1 - 10 ** (-extra / 20))[:, None] * band
++        y = y - expr.times(band, 1 - expr.linear(-extra))
+     return y, {"avg_db": round(float(gr.mean()), 2), "max_db": round(float(gr.max()), 2)}, dynamics.decimate(gr, fs)
+ 
+ 
+@@ -401,7 +401,7 @@
+     open_ = maximum_filter1d(open_, size=la + 1, origin=-(la // 2), mode="nearest")
+     open_ = dynamics.attack_smooth(open_, 2.0, fs)
+     gr = (rng - open_).clip(0, rng)
+-    y = x * (10 ** (-gr / 20))[:, None]
++    y = expr.gained(x, -gr)
+     return y, {"threshold_db": round(thr, 1), "avg_db": round(float(gr.mean()), 2),
+                "closed_pct": round(100 * float(np.mean(gr > cfg["range_db"] / 2)), 1)}, dynamics.decimate(gr, fs)
+ 
+@@ -427,14 +427,14 @@
+     open_ = _hold(np.max(kit, axis=0) > 0.08, fs, 0.3, cfg["hold_s"]) if kit else np.ones(len(x))
+     band = np.abs(_band(loudness.mono(x), fs, 2000.0, 12000.0))
+     fast, slow = dynamics.envelope(band, fs, 0.5, 30.0), dynamics.envelope(band, fs, 20.0, 30.0)
+-    onset = 20 * np.log10((fast + EPS) / (slow + EPS))
+-    lev = 20 * np.log10(fast + EPS)
++    onset = expr.ratio_db(fast, slow, EPS)
++    lev = expr.db(fast, EPS)
+     own = (onset > cfg["own_onset_db"]) & (lev > np.percentile(lev, 99) - 20)
+     open_ = np.maximum(open_, _hold(own, fs, 0.05, cfg["own_hold_s"]))
+     # smooth: open quickly, close slowly
+     open_ = dynamics.attack_smooth(dynamics.release_hold(open_, 300.0, fs), 10.0, fs).clip(0, 1)
+     gr = cfg["depth_db"] * (1 - open_)
+-    y = x * (10 ** (-gr / 20))[:, None]
++    y = expr.gained(x, -gr)
+     stats = {"closed_pct": round(100 * float(np.mean(gr > cfg["depth_db"] / 2)), 1),
+              "removed_db": round(float(10 * np.log10((np.mean(y * y) + EPS) / (np.mean(x * x) + EPS))), 2),
+              "_gr": gr.astype(np.float32)}  # the whole curve: the original recording follows it ([mix])
+@@ -684,10 +684,10 @@
+             # keep the track's power: folding a roomy stem to mono would otherwise lose level
+             p_in = float(np.mean(x * x))
+             x = stereo.mid_side(x, fs, 0.0, cfg["width"])
+-            x *= np.sqrt(p_in / (float(np.mean(x * x)) + EPS))
++            x *= float(np.sqrt(p_in / (float(np.mean(x * x)) + EPS)))
+         if cfg["pan"]:
+             th = (cfg["pan"] + 1) * np.pi / 4  # constant-power pan law: -1 left, 0 unchanged, +1 right
+-            x = x * (np.sqrt(2) * np.array([np.cos(th), np.sin(th)]))
++            x = x * (np.sqrt(2) * np.array([np.cos(th), np.sin(th)])).astype(x.dtype, copy=False)
+     if cfg["gain_db"]:
+         x = x * 10 ** (cfg["gain_db"] / 20)
+     return x
+diff --color -ruN -x __pycache__ /tmp/claude-1001/-media-secure-storage-Personal-Circhi/1d8dd9b8-8da2-47f5-adaf-4f968af2583f/scratchpad/speed/final2/mooz/eq.py mooz/eq.py
+--- /tmp/claude-1001/-media-secure-storage-Personal-Circhi/1d8dd9b8-8da2-47f5-adaf-4f968af2583f/scratchpad/speed/final2/mooz/eq.py	2026-10-01 10:34:10.823214001 +0200
++++ mooz/eq.py	2026-11-20 09:53:17.133358479 +0100
+@@ -116,7 +116,7 @@
+ 
+ def apply_fir(x: np.ndarray, h: np.ndarray) -> np.ndarray:
+     """Zero-latency linear-phase filtering (odd-length symmetric FIR)."""
+-    return signal.oaconvolve(x, h[:, None], mode="same", axes=0)
++    return signal.oaconvolve(x, h[:, None].astype(x.dtype, copy=False), mode="same", axes=0)
+ 
+ 
+ def at_freqs(grid: np.ndarray, curve: np.ndarray, freqs=REPORT_FREQS) -> dict[str, float]:
+diff --color -ruN -x __pycache__ /tmp/claude-1001/-media-secure-storage-Personal-Circhi/1d8dd9b8-8da2-47f5-adaf-4f968af2583f/scratchpad/speed/final2/mooz/expr.py mooz/expr.py
+--- /tmp/claude-1001/-media-secure-storage-Personal-Circhi/1d8dd9b8-8da2-47f5-adaf-4f968af2583f/scratchpad/speed/final2/mooz/expr.py	1970-01-01 01:00:00.000000000 +0100
++++ mooz/expr.py	2026-11-20 09:49:25.582197328 +0100
+@@ -0,0 +1,86 @@
++"""Element-wise mathematics on whole signals, on threads.
++
++A detector or a gain curve is one value per sample, five minutes of them 14 million, and numpy
++works through each of its operations on one thread, making an array at every step. numexpr
++evaluates the whole expression in one pass on several threads, with the same functions and in
++the same order, so the samples come out the same (on the band's takes to the last bit) and five
++to six times sooner. Short arrays go through numpy: starting the threads would cost more.
++
++The expressions are written out here once, in dB arithmetic's own terms, and used by name.
++"""
++
++from __future__ import annotations
++
++import numpy as np
++
++from . import loudness
++
++SHORT = 1 << 15  # elements; below this numpy is as fast
++_ne = None       # numexpr, loaded at the first call
++
++
++def _numexpr():
++    global _ne
++    if _ne is None:
++        import numexpr
++
++        numexpr.set_num_threads(max(1, min(loudness.THREADS, numexpr.detect_number_of_cores())))
++        _ne = numexpr
++    return _ne
++
++
++def threads(n: int) -> None:
++    """The number of threads from now on (a worker process has its share)."""
++    _numexpr().set_num_threads(max(1, n))
++
++
++def _run(expr: str, **names):
++    return _numexpr().evaluate(expr, local_dict=names, global_dict={})
++
++
++def linear(g_db: np.ndarray) -> np.ndarray:
++    """The gain of a curve in dB: 10 ** (g_db / 20)."""
++    return 10 ** (g_db / 20) if g_db.size < SHORT else _run("10 ** (g / 20)", g=g_db)
++
++
++def db(a: np.ndarray, floor: float = 0.0) -> np.ndarray:
++    """An amplitude in dB: 20 * log10(a + floor)."""
++    return 20 * np.log10(a + floor) if a.size < SHORT else _run("20 * log10(a + f)", a=a, f=floor)
++
++
++def power_db(p: np.ndarray, floor: float = 0.0) -> np.ndarray:
++    """A power in dB: 10 * log10(p + floor)."""
++    return 10 * np.log10(p + floor) if p.size < SHORT else _run("10 * log10(p + f)", p=p, f=floor)
++
++
++def ratio_db(a: np.ndarray, b: np.ndarray, floor: float) -> np.ndarray:
++    """One amplitude against another in dB: 20 * log10((a + floor) / (b + floor))."""
++    if a.size < SHORT:
++        return 20 * np.log10((a + floor) / (b + floor))
++    return _run("20 * log10((a + f) / (b + f))", a=a, b=b, f=floor)
++
++
++def gained(x: np.ndarray, g_db: np.ndarray) -> np.ndarray:
++    """x (samples x channels) with a gain curve in dB, one value per sample: x * 10 ** (g_db / 20).
++    The curve is worked out in 64 bits; float32 samples stay float32."""
++    if x.dtype == np.float32:
++        return times(x, linear(g_db))
++    if x.size < SHORT:
++        return x * (10 ** (g_db / 20))[:, None]
++    return _run("x * 10 ** (g / 20)", x=x, g=g_db[:, None])
++
++
++def times(x: np.ndarray, k: np.ndarray) -> np.ndarray:
++    """x (samples x channels) times a factor per sample, in x's own precision: x * k[:, None]."""
++    k = k.astype(x.dtype, copy=False)[:, None]
++    return x * k if x.size < SHORT else _run("x * k", x=x, k=k)
++
++
++def knee(over: np.ndarray, slope: float, knee_db: float) -> np.ndarray:
++    """A soft-knee compressor's curve above its knee's lower edge (dynamics.gain_reduction):
++    slope * over past the knee, the parabola slope * (over + knee/2)**2 / (2 knee) inside it."""
++    half = knee_db / 2
++    if over.size < SHORT:
++        return np.where(over > half, slope * over, slope * (over + half) ** 2 / (2 * knee_db))
++    return _run("where(over > half, slope * over, slope * (over + half) ** 2 / (2 * knee))", over=over, half=half, slope=slope,
++                knee=knee_db)
+diff --color -ruN -x __pycache__ /tmp/claude-1001/-media-secure-storage-Personal-Circhi/1d8dd9b8-8da2-47f5-adaf-4f968af2583f/scratchpad/speed/final2/mooz/loudness.py mooz/loudness.py
+--- /tmp/claude-1001/-media-secure-storage-Personal-Circhi/1d8dd9b8-8da2-47f5-adaf-4f968af2583f/scratchpad/speed/final2/mooz/loudness.py	2026-11-19 19:03:48.073923434 +0100
++++ mooz/loudness.py	2026-11-20 09:41:04.819656550 +0100
+@@ -79,15 +79,36 @@
+     return np.array([shelf, highpass])
+ 
+ 
+-def _segment_energy(x: np.ndarray, fs: float) -> tuple[np.ndarray, int]:
+-    """K-weighted energy, summed over channels, per 100 ms segment."""
+-    z = signal.sosfilt(k_weighting_sos(fs), x, axis=0)
++def _k_weighted(x: np.ndarray, fs: float) -> np.ndarray:
++    """x through the K-weighting filter, its channels on a thread each where there are threads
++    (the same samples as the filter along the whole array gives)."""
++    sos = k_weighting_sos(fs)
++    ex = pool() if x.shape[1] > 1 else None
++    if ex is None:
++        return signal.sosfilt(sos, x, axis=0)
++    z = np.empty(x.shape, dtype=np.result_type(x.dtype, np.float64))
++
++    def channel(c: int) -> None:
++        z[:, c] = signal.sosfilt(sos, x[:, c])
++
++    for _ in ex.map(channel, range(x.shape[1])):
++        pass
++    return z
++
++
++def _energy(z: np.ndarray, fs: float) -> tuple[np.ndarray, int]:
++    """The energy of a K-weighted signal, summed over its channels, per 100 ms segment."""
+     p = np.einsum("ij,ij->i", z, z)
+     seg = int(round(0.1 * fs))
+     n = len(p) // seg
+     return p[: n * seg].reshape(n, seg).sum(axis=1), seg
+ 
+ 
++def _segment_energy(x: np.ndarray, fs: float) -> tuple[np.ndarray, int]:
++    """K-weighted energy, summed over channels, per 100 ms segment."""
++    return _energy(_k_weighted(x, fs), fs)
++
++
+ def _windows(energy: np.ndarray, seg: int, nseg: int) -> np.ndarray:
+     """Mean power of sliding windows nseg segments long, hopping one segment."""
+     if len(energy) < nseg:
+@@ -124,13 +145,16 @@
+     short_term: np.ndarray  # LUFS, 3 s windows every 100 ms
+ 
+ 
+-def measure(x: np.ndarray, fs: float) -> Loudness:
+-    energy, seg = _segment_energy(x, fs)
++def _measure(energy: np.ndarray, seg: int) -> Loudness:
+     mom = _windows(energy, seg, 4)
+     st = _windows(energy, seg, 30)
+     return Loudness(_integrated(mom), _lra(st), _lufs(mom), _lufs(st))
+ 
+ 
++def measure(x: np.ndarray, fs: float) -> Loudness:
++    return _measure(*_segment_energy(x, fs))
++
++
+ def integrated(x: np.ndarray, fs: float) -> float:
+     energy, seg = _segment_energy(x, fs)
+     return _integrated(_windows(energy, seg, 4))
+@@ -206,14 +230,18 @@
+ 
+ 
+ def summary(x: np.ndarray, fs: float) -> tuple[dict, Loudness]:
+-    ld = measure(x, fs)
++    z = _k_weighted(x, fs)  # once, for the loudness and for each channel's (channel_balance_db filters each again)
++    ld = _measure(*_energy(z, fs))
++    one = lambda c: _integrated(_windows(*_energy(z[:, c : c + 1], fs), 4))  # noqa: E731
++    balance = one(0) - one(1) if x.shape[1] == 2 else 0.0
++    del z
+     tp = true_peak_db(x)
+     values = {
+         "integrated_lufs": ld.integrated,
+         "lra_lu": ld.lra,
+         "true_peak_dbtp": tp,
+         "plr_db": tp - ld.integrated,
+-        "balance_db": channel_balance_db(x, fs),
++        "balance_db": balance,
+     }
+     return {k: round(v, 1) + 0.0 for k, v in values.items()}, ld  # + 0.0 drops "-0.0"
+ 
+diff --color -ruN -x __pycache__ /tmp/claude-1001/-media-secure-storage-Personal-Circhi/1d8dd9b8-8da2-47f5-adaf-4f968af2583f/scratchpad/speed/final2/mooz/pipeline.py mooz/pipeline.py
+--- /tmp/claude-1001/-media-secure-storage-Personal-Circhi/1d8dd9b8-8da2-47f5-adaf-4f968af2583f/scratchpad/speed/final2/mooz/pipeline.py	2026-11-19 18:27:43.300956524 +0100
++++ mooz/pipeline.py	2026-11-20 10:09:08.933037320 +0100
+@@ -19,7 +19,7 @@
+ import soundfile as sf
+ from scipy import signal
+ 
+-from . import bed, chaincache, character, cleanup, config, dynamics, effects, eq, export, loudness, multitrack, profile, progress, separate, space, stages, stereo, takes, trim
++from . import augment, bed, chaincache, character, cleanup, config, dynamics, effects, eq, export, expr, loudness, multitrack, profile, progress, separate, space, stages, stereo, takes, trim
+ 
+ 
+ def _finalize(x: np.ndarray, fs: int, cfg: dict) -> tuple[np.ndarray, np.ndarray, dict]:
+@@ -73,7 +73,7 @@
+     from scipy.ndimage import uniform_filter1d
+ 
+     g = uniform_filter1d(uniform_filter1d(g, k), k)  # a slow hand on the fader
+-    out = out + (10 ** (g / 20) - 1)[:, None] * v
++    out = out + expr.times(v, expr.linear(g) - 1)
+     return out, {"avg_up_db": round(float(g[g > 0].mean()) if (g > 0).any() else 0.0, 1),
+                  "max_up_db": round(float(g.max()), 1), "max_down_db": round(float(-g.min()), 1),
+                  "riding_up_pct": round(100 * float(np.mean(g > 1.0)), 0)}
+@@ -110,6 +110,13 @@
+     return y, {"songs": len(tones), "eq_db": eq.at_freqs(grid, curve)}
+ 
+ 
++def _float(cfg: dict) -> str:
++    """The precision the audio is held in ([audio] float), as numpy and soundfile name it."""
++    if cfg["audio"]["float"] not in (32, 64):
++        raise ValueError(f"audio.float must be 32 or 64, not {cfg['audio']['float']}")
++    return f"float{cfg['audio']['float']}"
++
++
+ def _drum_bus(files: dict[str, Path], lufs: dict[str, float], fs: int, cfg: dict) -> tuple[np.ndarray | None, dict]:
+     """Stage 4: the kit as one instrument. Its pieces are balanced against each other
+     (kit targets), then the bus gets its EQ, glue compression, parallel ("New York")
+@@ -118,7 +125,7 @@
+     members = [n for n in dcfg["stems"] if n in files]
+     if not dcfg["enabled"] or not members:
+         return None, {}
+-    read = lambda n: sf.read(files[n], dtype="float64", always_2d=True)[0]  # noqa: E731
++    read = lambda n: sf.read(files[n], dtype=_float(cfg), always_2d=True)[0]  # noqa: E731
+     bus = sum(read(n) for n in members)
+     stats: dict = {"stems": members, "unbalanced_lufs": round(loudness.integrated(bus, fs), 1)}
+     bcfg = dcfg["balance"]
+@@ -182,7 +189,7 @@
+         r = raw_of(name)
+         r *= g_orig
+         in_orig[name] = loudness.integrated(r, fs)
+-        r += sf.read(f, dtype="float64", always_2d=True)[0]
++        r += sf.read(f, dtype=out.dtype.name, always_2d=True)[0]
+         in_blend[name] = loudness.integrated(r, fs)
+         del r
+     change, report = cleanup.balance_gains(in_blend, total, bcfg)
+@@ -203,7 +210,7 @@
+         report[gname]["original_share_db"] = round(20 * np.log10(r), 1) if r > 0 else None
+     for name, g in gains.items():
+         if g != 0.0:
+-            out += (-1.0 if g is None else 10 ** (g / 20) - 1.0) * sf.read(processed_files[name], dtype="float64", always_2d=True)[0]
++            out += (-1.0 if g is None else 10 ** (g / 20) - 1.0) * sf.read(processed_files[name], dtype=out.dtype.name, always_2d=True)[0]
+     total = loudness.integrated(out + original, fs)
+     for gname, members in groups.items():
+         if gname not in report or not members:
+@@ -213,7 +220,7 @@
+             a = raw_of(m)
+             a *= g_orig
+             if gains[m] is not None:
+-                a += sf.read(processed_files[m], dtype="float64", always_2d=True)[0] * 10 ** (gains[m] / 20)
++                a += sf.read(processed_files[m], dtype=out.dtype.name, always_2d=True)[0] * 10 ** (gains[m] / 20)
+             acc = a if acc is None else acc + a
+             del a
+         report[gname]["after_lu"] = round(loudness.integrated(acc, fs) - total, 1)
+@@ -223,15 +230,17 @@
+ 
+ @chaincache.uses
+ def _chain(name: str, stems: dict[str, Path], read, fs: int, cfg: dict, hit_triggers, w_buzz, prof, target,
+-           tempo_bpm: float | None, work: Path, stage: stages.StageWriter):
++           tempo_bpm: float | None, work: Path, stage: stages.StageWriter, kept_dir: Path | None = None):
+     """One stem's chain, from its separated file to its processed one: (3) the drum clean-up, (2) the
+     studio chain, then its place in the mix and its sends. Returns (stats, the tracks report's detail,
+     the kit gate's gain reduction, what the bed clean-up took, the processed file, the stage files it
+     wrote), or None for a stem with nothing in it. read: a stem's file as samples; hit_triggers: the
+     hit triggers, made when the first chain asks. It reads nothing else of the run, so it can be made in
+-    a process of its own (_chain_job) and taken as an earlier run left it (chaincache.py)."""
++    a process of its own (_chain_job) and taken as an earlier run left it (chaincache.py). kept_dir:
++    the take's kept chains, where what a chain works out from its stem alone is kept too (the bass's pitch)."""
+     tcfg = cfg["tracks"].get(name, cfg["track_defaults"])
+     zcfg, bcfg = cfg["buzz"], cfg["bed"]
++    augment.PITCH_DIR = kept_dir / "_pitch" if kept_dir is not None else None
+     raw = read(stems[name])
+     if not np.isfinite(loudness.integrated(raw, fs)):
+         # nothing in it (below the loudness gate everywhere), e.g. no "other" instrument in this
+@@ -315,16 +324,18 @@
+ 
+ def _chain_workers(cfg: dict, chains_to_make: int, seconds: float) -> int:
+     """How many chains to make at once. [chains] workers or MOOZ_WORKERS says it; 0: as many as
+-    the memory to spare allows, WORKERS_MOST at most, one for a short take. A worker needs about
+-    0.6 GB and 0.4 GB per minute of take (2.6 GB measured on one of 5 minutes), the run itself
+-    1.5 GB and 0.25 per minute at its own highest point (2.75 GB measured)."""
++    the memory to spare allows, WORKERS_MOST at most, one for a short take. Measured on a take of
++    5 minutes: a worker 2.3 GB and the run itself 2.4 GB at its own highest point with the audio in
++    32 bits, 2.6 and 2.75 GB in 64; so 0.6 GB and 0.35 (0.4) per minute for a worker, 1.5 GB and
++    0.18 (0.25) per minute for the run."""
+     asked = int(os.environ.get("MOOZ_WORKERS") or cfg["chains"]["workers"])
+     if asked <= 0:
+         spare = _spare_memory_gb()
+         if seconds < WORKERS_FROM_S or spare is None:
+             return 1
+         minutes = seconds / 60
+-        asked = min(WORKERS_MOST, (os.cpu_count() or 2) // 2, int((spare - 1.5 - 0.25 * minutes) / (0.6 + 0.4 * minutes)))
++        worker, run = (0.35, 0.18) if cfg["audio"]["float"] == 32 else (0.4, 0.25)
++        asked = min(WORKERS_MOST, (os.cpu_count() or 2) // 2, int((spare - 1.5 - run * minutes) / (0.6 + worker * minutes)))
+     return max(1, min(asked, chains_to_make))
+ 
+ 
+@@ -342,6 +353,7 @@
+         except OSError:
+             pass
+     loudness.THREADS = threads
++    expr.threads(threads)
+ 
+ 
+ def _workers(n: int):
+@@ -374,7 +386,7 @@
+ 
+     t0 = time.perf_counter()
+     span = a["span"]
+-    read = lambda f: sf.read(f, dtype="float64", always_2d=True, **({"start": span[0], "stop": span[1]} if span else {}))[0]  # noqa: E731
++    read = lambda f: sf.read(f, dtype=_float(a["cfg"]), always_2d=True, **({"start": span[0], "stop": span[1]} if span else {}))[0]  # noqa: E731
+     triggers: dict = {}
+ 
+     def hit_triggers() -> dict:  # as the run made them, read from its work folder without a copy
+@@ -384,7 +396,7 @@
+ 
+     stage = stages.StageWriter(a["stage_root"], a["stage_fmt"])
+     made = _chain(a["name"], a["stems"], read, a["fs"], a["cfg"], hit_triggers, a["w_buzz"], a["prof"], a["target"],
+-                  a["tempo_bpm"], a["work"], stage)
++                  a["tempo_bpm"], a["work"], stage, a["chains_root"])
+     if made is not None:
+         st, detail, g, taken, proc, staged = made
+         stage.flush()
+@@ -415,7 +427,9 @@
+         details["mix"] = {}
+         out, st = effects.process_track(y, fs, cfg["tracks"]["mix"], details["mix"])
+         return out, {"mix": st}
+-    read = lambda f: sf.read(f, dtype="float64", always_2d=True, start=start, stop=end)[0]  # noqa: E731
++    read = lambda f: sf.read(f, dtype=_float(cfg), always_2d=True, start=start, stop=end)[0]  # noqa: E731
++    # what measures and decides reads the stems in 64 bits whatever the audio is held in: the hit triggers, the buzz frames
++    read64 = lambda f: sf.read(f, dtype="float64", always_2d=True, start=start, stop=end)[0]  # noqa: E731
+     scfg = cfg["stems"]
+     rcfg = scfg["refine"]
+     if rcfg["enabled"]:  # bleed reduction: stems re-estimated as sharpened masks on the mix
+@@ -426,7 +440,8 @@
+             stems[n] = work / f"_refined_{n}.wav"
+             sf.write(stems[n], a, fs, subtype="FLOAT")
+         del refined
+-        read = lambda f: sf.read(f, dtype="float64", always_2d=True)[0]  # noqa: E731  (already trimmed)
++        read = lambda f: sf.read(f, dtype=_float(cfg), always_2d=True)[0]  # noqa: E731  (already trimmed)
++        read64 = lambda f: sf.read(f, dtype="float64", always_2d=True)[0]  # noqa: E731
+         room_stems = None
+     room_of = lambda n: (room_stems or {}).get(n, stems[n])  # noqa: E731
+     original = y.copy()  # the recording as prepared: blended under the processed stems in stage 5
+@@ -439,10 +454,10 @@
+ 
+     def hit_triggers() -> dict:  # made when the first stem needs them: not at all if every chain is kept
+         if not made:
+-            t = {src: effects.hit_trigger(read(stems[n]), fs, *effects.TRIGGER_BANDS[src])
++            t = {src: _hit_trigger(stems[n], src, lambda n=n: read64(stems[n]), fs, keep=False)
+                  for src, n in sources.items() if n in stems}
+             if "vocals" in stems:  # the singer's words (1-4 kHz), for the unmasking ducks of the guitars
+-                t["vocals"] = effects.hit_trigger(read(stems["vocals"]), fs, 1000.0, 4000.0)
++                t["vocals"] = effects.hit_trigger(read64(stems["vocals"]), fs, 1000.0, 4000.0)
+             made.append(t)
+         return made[0]
+ 
+@@ -460,7 +475,7 @@
+         if idle_src:
+             idle = effects._hold(np.max(idle_src, axis=0) > 0.08, fs, 0.3, 2.0) < 0.5
+             np.save(library / f"{stems_dir.name}.npy",
+-                    cleanup.buzz_frames({n: read(stems[n]) for n in ("hihat", "cymbals") if n in stems}, idle, fs, zcfg))
++                    cleanup.buzz_frames({n: read64(stems[n]) for n in ("hihat", "cymbals") if n in stems}, idle, fs, zcfg))
+         w_buzz = cleanup.buzz_fingerprint(library, zcfg)
+         stats["buzz"] = {"learnt_from_songs": len(list(library.glob("*.npy"))), "fingerprint": w_buzz is not None}
+     drum_names = set(cfg["drum_bus"]["stems"]) | {"drums"}
+@@ -478,7 +493,7 @@
+         key = made_of = None
+         if chains is not None:  # everything this stem's chain reads: the same as before, and it is not run again
+             key, made_of = chains.key({
+-                "stem": name, "file": idents[name], "span": [start, end], "fs": fs,
++                "stem": name, "file": idents[name], "span": [start, end], "fs": fs, "float": cfg["audio"]["float"],
+                 "triggers": {src: idents[n] for src, n in trigger_stems.items()},
+                 "chain": tcfg, "profile": prof, "target": target,
+                 "tempo_bpm": tempo_bpm if tcfg["sends"] else None,
+@@ -531,7 +546,8 @@
+                     stage.adopt(rel, f)
+                 processed_files[name] = kept.proc
+             else:
+-                made_here = _chain(name, stems, read, fs, cfg, hit_triggers, w_buzz, prof, target, tempo_bpm, work, stage)
++                made_here = _chain(name, stems, read, fs, cfg, hit_triggers, w_buzz, prof, target, tempo_bpm, work, stage,
++                                   kept_in.root)
+                 if made_here is None:
+                     stats[name] = {"silent": True}
+                     continue
+@@ -557,6 +573,7 @@
+               + ", ".join(f"{n} {d['seconds']:.0f} s" for n, d in made_by.items())
+               + f" (a worker's memory at most {max(d['peak_gb'] for d in made_by.values()):.1f} GB)", file=sys.stderr)
+     made.clear()
++    _triggers.clear()  # (those the character made and no chain asked for: every chain was kept)
+     # Stage 4: the drum kit as one instrument
+     progress.stage("drum_bus")
+     bus, stats["drum_bus"] = _drum_bus(processed_files, stem_lufs, fs, cfg)
+@@ -582,7 +599,7 @@
+     del y
+     out = np.zeros_like(original)
+     for f in processed_files.values():
+-        out += sf.read(f, dtype="float64", always_2d=True)[0]
++        out += sf.read(f, dtype=out.dtype.name, always_2d=True)[0]
+     unbalanced = loudness.integrated(out, fs)
+     share = cfg["mix"]["original_share"]
+     if not 0.0 <= share <= 0.5:
+@@ -602,7 +619,7 @@
+         # the original follows the kit gate in the snare buzz's band: while the drummer is not playing,
+         # the buzz the gate took from the hat and cymbal stems must not come back through the blend
+         gr = kit_gr.astype(np.float64)
+-        original -= (1 - 10 ** (-gr / 20))[:, None] * effects._band(original, fs, band[0], band[1])
++        original -= expr.times(effects._band(original, fs, band[0], band[1]), 1 - expr.linear(-gr))
+         stats["blend"]["kit_gate"] = {"band_hz": list(band), "max_db": round(float(gr.max()), 1),
+                                       "closed_pct": round(100 * float(np.mean(gr > gr.max() / 2)), 1)}
+         del gr
+@@ -629,7 +646,7 @@
+     ridden = None
+     if rd["enabled"] and voc:
+         g_of = lambda n: gains.get(n) or 0.0  # noqa: E731
+-        v = sum(sf.read(processed_files[n], dtype="float64", always_2d=True)[0] * 10 ** (g_of(n) / 20) for n in voc)
++        v = sum(sf.read(processed_files[n], dtype=out.dtype.name, always_2d=True)[0] * 10 ** (g_of(n) / 20) for n in voc)
+         before = out
+         out, stats["rider"] = _ride(out, v, fs, rd)
+         ridden = out - before
+@@ -639,7 +656,7 @@
+         for name, f in processed_files.items():
+             if gains.get(name, 0.0) is None:
+                 continue
+-            part = sf.read(f, dtype="float64", always_2d=True)[0] * 10 ** ((gains.get(name) or 0.0) / 20)
++            part = sf.read(f, dtype=out.dtype.name, always_2d=True)[0] * 10 ** ((gains.get(name) or 0.0) / 20)
+             if ridden is not None and name == voc[0]:
+                 part += ridden
+             stage.write(f"5_premix/{name}", part, fs)
+@@ -733,6 +750,20 @@
+ 
+ 
+ CHARACTER_MELODIC, CHARACTER_HITS = ("vocals", "guitar", "guitar_left", "guitar_right"), ("kick", "snare", "toms")
++_triggers: dict = {}  # the take's hit triggers, by stem file and drum: the character and the chains ask for the same ones
++
++
++@chaincache.uses
++def _hit_trigger(stem: Path, src: str, read, fs: int, keep: bool = True) -> np.ndarray:
++    """The hit trigger of drum src in the stem file (effects.hit_trigger in src's band), made once a
++    take: stage 0 makes those of kick, snare and toms for the song's character, the stems' stage wants
++    them again. keep = False: the last one to ask takes it away. read: the stem's samples."""
++    made = _triggers.pop((str(stem), src), None) if not keep else _triggers.get((str(stem), src))
++    if made is None:
++        made = effects.hit_trigger(read(), fs, *effects.TRIGGER_BANDS[src])
++        if keep:
++            _triggers[(str(stem), src)] = made
++    return made
+ 
+ 
+ @chaincache.uses
+@@ -740,7 +771,7 @@
+     """Stage 0: the song's character, from the recording as prepared and a few raw stems."""
+     read = lambda n: sf.read(stems[n], dtype="float64", always_2d=True, start=start, stop=end)[0]  # noqa: E731
+     raw = {n: read(n) for n in CHARACTER_MELODIC if stems and n in stems}
+-    trig = {k: effects.hit_trigger(read(k), fs, *effects.TRIGGER_BANDS[k]) for k in CHARACTER_HITS if k in stems} if stems else None
++    trig = {k: _hit_trigger(stems[k], k, lambda k=k: read(k), fs) for k in CHARACTER_HITS if k in stems} if stems else None
+     return character.characterise(y, fs, raw, trig)
+ 
+ 
+@@ -758,6 +789,7 @@
+     try:
+         return _process(take, cfg, work, False, ab)
+     finally:
++        _triggers.clear()
+         shutil.rmtree(work, ignore_errors=True)
+         try:
+             work.parent.rmdir()  # .work itself, when no other run is using it
+@@ -871,6 +903,7 @@
+         if close_dirs:
+             stage.link_raw(stems_dir, "1_merged")
+     if not analyze_only:
++        y = y.astype(_float(cfg), copy=False)  # from here to the master the audio is in [audio] float
+         y, rep["tracks"] = _tracks(y, fs, cfg, stems, start, end, work, stems_dir, details, stage, profiles, targets,
+                                    rep.get("character", {}).get("tempo_bpm"), room_stems, chains)
+         if chains is not None:  # which stem chains this run made, and which it found as an earlier run left them
+@@ -915,12 +948,16 @@
+         params = {k: gcfg[k] for k in dynamics.BAND_PARAMS}
+         if gcfg["target_gr_db"] > 0:  # the threshold that gives this much gain reduction while playing
+             lo_, hi_ = 5.0, 99.5
++            level = dynamics.level_db(y, fs, params["rms_ms"])  # the same at every step, and for the compressor after
+             for _ in range(7):
+                 mid_ = 0.5 * (lo_ + hi_)
+-                _, _, st_ = dynamics.compress(y, fs, **(params | {"threshold_pct": mid_}), active=active)
+-                lo_, hi_ = (mid_, hi_) if st_["avg_gr_db"] > gcfg["target_gr_db"] else (lo_, mid_)
++                avg = dynamics.average_reduction(level, fs, **(params | {"threshold_pct": mid_}), active=active)
++                lo_, hi_ = (mid_, hi_) if avg > gcfg["target_gr_db"] else (lo_, mid_)
+             params["threshold_pct"] = round(0.5 * (lo_ + hi_), 1)
+-        y, gr, rep["glue"] = dynamics.compress(y, fs, **params, active=active)
++        else:
++            level = None
++        y, gr, rep["glue"] = dynamics.compress(y, fs, **params, active=active, level=level)
++        del level
+         rep["glue"]["threshold_pct"] = params["threshold_pct"]
+         curves["glue"] = dynamics.decimate(gr, fs)
+ 
+diff --color -ruN -x __pycache__ /tmp/claude-1001/-media-secure-storage-Personal-Circhi/1d8dd9b8-8da2-47f5-adaf-4f968af2583f/scratchpad/speed/final2/mooz/plugins.py mooz/plugins.py
+--- /tmp/claude-1001/-media-secure-storage-Personal-Circhi/1d8dd9b8-8da2-47f5-adaf-4f968af2583f/scratchpad/speed/final2/mooz/plugins.py	2026-10-02 11:12:32.695302413 +0200
++++ mooz/plugins.py	2026-11-20 09:53:17.163498481 +0100
+@@ -52,7 +52,7 @@
+     rms = float(np.sqrt(np.mean(x * x))) + 1e-20
+     cal = 10 ** (cfg["level_db"] / 20) / rms
+     # one call for the whole song: pedalboard's chunked streaming does not give the same result
+-    y = p.process(np.ascontiguousarray((x * cal).T, dtype=np.float32), fs).T.astype(np.float64)
++    y = p.process(np.ascontiguousarray((x * cal).T, dtype=np.float32), fs).T.astype(x.dtype)
+     # its oversampling filters delay it by a few samples: line it up again (it may sit next to
+     # other stems that did not go through it)
+     a, b = x.mean(axis=1)[: int(30 * fs)], y.mean(axis=1)[: int(30 * fs)]
+@@ -60,9 +60,9 @@
+     lag = max(lags, key=lambda d: float(np.dot(a[: len(a) - max(d, 0)], b[max(d, 0) :]) if d >= 0
+                                          else np.dot(a[-d:], b[: len(b) + d])))
+     if lag > 0:
+-        y = np.concatenate([y[lag:], np.zeros((lag, y.shape[1]))])
++        y = np.concatenate([y[lag:], np.zeros((lag, y.shape[1]), y.dtype)])
+     elif lag < 0:
+-        y = np.concatenate([np.zeros((-lag, y.shape[1])), y[:lag]])
++        y = np.concatenate([np.zeros((-lag, y.shape[1]), y.dtype), y[:lag]])
+     gain = rms / (float(np.sqrt(np.mean(y * y))) + 1e-20)
+     # harmonics: the share of the output that is not a (phase-shifted) copy of the input
+     a_, b_ = x.mean(axis=1)[::2], y.mean(axis=1)[::2]
+diff --color -ruN -x __pycache__ /tmp/claude-1001/-media-secure-storage-Personal-Circhi/1d8dd9b8-8da2-47f5-adaf-4f968af2583f/scratchpad/speed/final2/mooz/space.py mooz/space.py
+--- /tmp/claude-1001/-media-secure-storage-Personal-Circhi/1d8dd9b8-8da2-47f5-adaf-4f968af2583f/scratchpad/speed/final2/mooz/space.py	2026-10-05 10:25:02.125732534 +0200
++++ mooz/space.py	2026-11-20 09:53:17.206028018 +0100
+@@ -56,11 +56,11 @@
+     mod = depth_ms / 1000 * fs * (np.sin(2 * np.pi * rate_hz * t + rng.uniform(0, 6.3))
+                                   + 0.3 * np.sin(2 * np.pi * 5.1 * rate_hz * t))
+     pos = np.clip(np.arange(len(x)) - depth_ms / 1000 * fs * 1.3 + mod, 0, len(x) - 1)
+-    return np.column_stack([np.interp(pos, np.arange(len(x)), x[:, c]) for c in range(x.shape[1])])
++    return np.column_stack([np.interp(pos, np.arange(len(x)), x[:, c]) for c in range(x.shape[1])]).astype(x.dtype, copy=False)
+ 
+ 
+ def _delay(x: np.ndarray, d: int) -> np.ndarray:
+-    return np.concatenate([np.zeros((d, x.shape[1])), x[: len(x) - d]]) if d > 0 else x
++    return np.concatenate([np.zeros((d, x.shape[1]), x.dtype), x[: len(x) - d]]) if d > 0 else x
+ 
+ 
+ def delay_ms_of(cfg: dict, tempo_bpm: float | None) -> float:
+@@ -76,7 +76,7 @@
+     kind = cfg["type"]
+     src = _bands(x, fs, cfg.get("hp_hz", 200.0), cfg.get("lp_hz", 8000.0))
+     if kind in ("plate", "room"):
+-        ir = reverb_ir(fs, cfg["rt60_s"], cfg.get("predelay_ms", 10.0), cfg.get("damping", 0.5))
++        ir = reverb_ir(fs, cfg["rt60_s"], cfg.get("predelay_ms", 10.0), cfg.get("damping", 0.5)).astype(x.dtype, copy=False)
+         wet = np.column_stack([signal.oaconvolve(src[:, 0], ir[:, 0])[: len(x)],
+                                signal.oaconvolve(src[:, 1 % src.shape[1]], ir[:, 1])[: len(x)]])
+     elif kind == "slap":
+@@ -100,7 +100,7 @@
+         # left and right (ping_pong) or in place
+         d = int(delay_ms_of(cfg, tempo_bpm) / 1000 * fs)
+         mono = src.mean(axis=1, keepdims=True)
+-        rep, wet = mono, np.zeros((len(x), 2))
++        rep, wet = mono, np.zeros((len(x), 2), x.dtype)
+         for k in range(cfg.get("repeats", 5)):
+             rep = _delay(rep, d) * (cfg["feedback"] if k else 1.0)
+             if k:
+@@ -109,7 +109,7 @@
+                 side = (1.0, 0.25) if k % 2 == 0 else (0.25, 1.0)
+             else:
+                 side = (1.0, 1.0)
+-            wet += rep * np.array(side)[None, :]
++            wet += rep * np.array(side, x.dtype)[None, :]
+     elif kind == "chorus":
+         # micro-pitch doubling: two copies on slowly modulated delays (a few cents up and down),
+         # one hard left, one hard right, under the dry voice: wider and bigger, not further away
+@@ -128,7 +128,7 @@
+     st = {"type": kind, "level_lu": cfg["level_lu"]}
+     if kind in ("delay", "tape_echo", "slap"):
+         st["delay_ms"] = round(delay_ms_of(cfg, tempo_bpm) if kind == "delay" else cfg["delay_ms"], 0)
+-    return wet * gain, st
++    return (wet * gain).astype(x.dtype, copy=False), st
+ 
+ 
+ def sends(x: np.ndarray, fs: float, cfgs: list[dict], tempo_bpm: float | None = None
+diff --color -ruN -x __pycache__ /tmp/claude-1001/-media-secure-storage-Personal-Circhi/1d8dd9b8-8da2-47f5-adaf-4f968af2583f/scratchpad/speed/final2/mooz/stereo.py mooz/stereo.py
+--- /tmp/claude-1001/-media-secure-storage-Personal-Circhi/1d8dd9b8-8da2-47f5-adaf-4f968af2583f/scratchpad/speed/final2/mooz/stereo.py	2026-10-02 12:23:00.895769062 +0200
++++ mooz/stereo.py	2026-11-20 09:56:19.745741828 +0100
+@@ -22,7 +22,7 @@
+         side = eq.apply_fir(side[:, None], eq.design_fir(grid, 20 * np.log10(np.maximum(amp, 1e-3)), fs, 8191))[:, 0]
+     elif mono_below_hz > 0:
+         sos = signal.butter(2, mono_below_hz, "low", fs=fs, output="sos")
+-        side = side - signal.sosfiltfilt(sos, side)
++        side = side - signal.sosfiltfilt(sos, side).astype(side.dtype, copy=False)
+     if width != 1.0:
+         side = side * width
+     return np.column_stack([mid + side, mid - side])
+@@ -34,10 +34,10 @@
+     Returns the corrected signal, the measured L-R difference and the applied
+     correction (both in dB).
+     """
+-    pl, pr = np.mean(x[:, 0] ** 2), np.mean(x[:, 1] ** 2)
++    pl, pr = np.mean(x[:, 0] ** 2, dtype=np.float64), np.mean(x[:, 1] ** 2, dtype=np.float64)
+     if pl <= 0 or pr <= 0:
+         return x, 0.0, 0.0
+     diff = float(10 * np.log10(pl / pr))
+     corr = float(np.clip(strength * diff, -max_db, max_db))
+     g = 10 ** (corr / 40)
+-    return x * np.array([1 / g, g]), round(diff, 2), round(corr, 2)
++    return x * np.array([1 / g, g], x.dtype), round(diff, 2), round(corr, 2)

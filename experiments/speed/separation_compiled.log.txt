@@ -1,0 +1,32 @@
+# 20 November 2026: mooz --separate-only on Biancaneve (room and Tr2), compiled blocks, one separating process, nothing kept before
+  stems: separating (roformer: ensemble: BS-Roformer-SW+bs_roformer_vocals_revive_v2_unwa+bs_roformer+bs_bass_xlancer (mix) → BS-Roformer-SW (instru
+  stems: step 1: BS-Roformer-SW.ckpt on mix
+  stems:   done in 47s
+  stems: step 1: bs_roformer_vocals_revive_v2_unwa.ckpt on mix
+  stems:   done in 62s
+  stems: step 1: model_bs_roformer_ep_317_sdr_12.9755.ckpt on mix
+  stems:   done in 101s
+  stems: step 1: bs_bass_xlancer.ckpt on mix
+  stems:   done in 30s
+  stems: step 2: BS-Roformer-SW.ckpt on _instrumental
+  stems:   done in 32s
+  stems: step 3: max_spec of _bass_xlance, _bass_sw, _bass_instrumental -> bass
+  stems: step 4: mdx23c_drumsep_5stem_aufr33_jarredou.ckpt on drums
+  stems:   done in 21s
+  stems: step 4: MDX23C-DrumSep-aufr33-jarredou.ckpt on drums
+  stems:   done in 33s
+  stems: step 5: dereverb_mel_band_roformer_less_aggressive_anvuew_sdr_18.8050.ckpt on vocals
+  stems:   done in 33s
+  stems: separating (roformer: close: BS-Roformer-SW+bs_roformer_vocals_revive_v2_unwa+bs_roformer+bs_bass_xlancer (mix) → BS-Roformer-SW (instrumen
+  stems: step 1: BS-Roformer-SW.ckpt on mix
+  stems:   done in 35s
+  stems: step 1: bs_roformer_vocals_revive_v2_unwa.ckpt on mix
+  stems:   done in 57s
+  stems: step 1: model_bs_roformer_ep_317_sdr_12.9755.ckpt on mix
+  stems:   done in 100s
+  stems: step 1: bs_bass_xlancer.ckpt on mix
+  stems:   done in 29s
+  stems: step 2: BS-Roformer-SW.ckpt on _instrumental
+  stems:   done in 33s
+  stems: step 3: max_spec of _bass_xlance, _bass_sw, _bass_instrumental -> bass
+  (659s)

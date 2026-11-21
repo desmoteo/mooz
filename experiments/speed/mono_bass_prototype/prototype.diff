@@ -1,0 +1,22 @@
+--- mooz/pipeline.py	2026-11-19 18:27:43.300956524 +0100
++++ /tmp/claude-1001/-media-secure-storage-Personal-Circhi/1d8dd9b8-8da2-47f5-adaf-4f968af2583f/scratchpad/speed/monobass/mooz/pipeline.py	2026-11-20 09:26:38.658287744 +0100
+@@ -241,6 +241,10 @@
+     st: dict = {}
+     detail = effects.begin_detail(raw, fs)
+     staged = len(stage.written)
++    # PROTOTYPE: a stem the settings make mono in the end (width 0, no pan) goes through its chain as its mono sum
++    mono_chain = bool(os.environ.get("MOOZ_MONO")) and tcfg["width"] == 0.0 and not tcfg["pan"]
++    if mono_chain:
++        raw = loudness.mono(raw)[:, None]
+     stem = raw
+     taken = None  # what the bed clean-up took from this stem
+     if w_buzz is not None and name in zcfg["stems"]:  # stage 3, step 2: remove the buzz
+@@ -269,6 +273,8 @@
+     del raw
+     others = {k: v for k, v in triggers.items() if k != name}
+     stem = effects.studio_track(stem, fs, tcfg, st, detail, prof, target, others)  # stage 2
++    if mono_chain:  # PROTOTYPE: two channels again from here (the stage file, the mix stage, the processed file)
++        stem = np.repeat(stem, 2, axis=1)
+     stage.write(f"2_stems/{name}", stem, fs)
+     st.pop("_pitch", None)  # the bass's pitch track, shared by its clean-up and fundamental
+     for i, smp in enumerate(st.pop("_samples", [])):  # the drum samples made from this song

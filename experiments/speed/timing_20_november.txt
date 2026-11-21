@@ -1,0 +1,34 @@
+# 20 November 2026: ten runs in turn, 3 workers (ab.sh.txt); t_off/t_chains/t_all: the float32 prototype with MOOZ_F32 unset, chains, all; t_before/t_after: the code before and after mono-first filtering and a thread per channel
+t_off1 exit 0 | 2:11.00 wall | user 288.14 s | system 56.81 s | main peak 2730 MB | load 6.93 | 101 C
+  chains    9 made on 3 workers: kick 12 s, snare 17 s, toms 9 s, bass 50 s, cymbals 13 s, guitar 20 s, hihat 18 s, other 0 s, vocals 20 s (a worker's memory at most 2.6 GB)
+t_chains1 exit 0 | 1:58.26 wall | user 257.46 s | system 45.24 s | main peak 2730 MB | load 5.93 | 97 C
+  chains    9 made on 3 workers: kick 9 s, snare 12 s, toms 7 s, bass 39 s, cymbals 11 s, guitar 16 s, hihat 15 s, other 0 s, vocals 15 s (a worker's memory at most 2.5 GB)
+t_all1 exit 0 | 1:51.72 wall | user 244.85 s | system 43.83 s | main peak 2842 MB | load 6.76 | 100 C
+  chains    9 made on 3 workers: kick 9 s, snare 12 s, toms 7 s, bass 39 s, cymbals 12 s, guitar 15 s, hihat 16 s, other 0 s, vocals 14 s (a worker's memory at most 2.8 GB)
+t_before1 exit 0 | 2:15.46 wall | user 281.10 s | system 53.94 s | main peak 2694 MB | load 7.39 | 99 C
+  chains    9 made on 3 workers: kick 14 s, snare 18 s, toms 9 s, bass 50 s, cymbals 13 s, guitar 21 s, hihat 17 s, other 0 s, vocals 22 s (a worker's memory at most 2.6 GB)
+t_after1 exit 0 | 2:11.08 wall | user 287.74 s | system 53.27 s | main peak 2736 MB | load 8.20 | 102 C
+  chains    9 made on 3 workers: kick 11 s, snare 16 s, toms 10 s, bass 51 s, cymbals 14 s, guitar 19 s, hihat 19 s, other 0 s, vocals 20 s (a worker's memory at most 2.6 GB)
+t_after2 exit 0 | 2:08.73 wall | user 280.18 s | system 49.66 s | main peak 2731 MB | load 4.97 | 100 C
+  chains    9 made on 3 workers: kick 10 s, snare 14 s, toms 8 s, bass 45 s, cymbals 13 s, guitar 18 s, hihat 17 s, other 0 s, vocals 18 s (a worker's memory at most 2.6 GB)
+t_before2 exit 0 | 2:19.56 wall | user 292.21 s | system 49.76 s | main peak 2696 MB | load 4.18 | 88 C
+  chains    9 made on 3 workers: kick 12 s, snare 17 s, toms 10 s, bass 50 s, cymbals 14 s, guitar 21 s, hihat 18 s, other 0 s, vocals 21 s (a worker's memory at most 2.6 GB)
+t_all2 exit 0 | 1:51.32 wall | user 239.04 s | system 42.64 s | main peak 2843 MB | load 3.69 | 91 C
+  chains    9 made on 3 workers: kick 9 s, snare 13 s, toms 8 s, bass 38 s, cymbals 11 s, guitar 16 s, hihat 14 s, other 0 s, vocals 15 s (a worker's memory at most 2.8 GB)
+t_chains2 exit 0 | 2:00.22 wall | user 262.93 s | system 45.39 s | main peak 2730 MB | load 4.30 | 92 C
+  chains    9 made on 3 workers: kick 10 s, snare 14 s, toms 8 s, bass 42 s, cymbals 12 s, guitar 16 s, hihat 17 s, other 0 s, vocals 15 s (a worker's memory at most 2.5 GB)
+t_off2 exit 0 | 2:03.40 wall | user 278.48 s | system 49.16 s | main peak 2729 MB | load 5.62 | 93 C
+  chains    9 made on 3 workers: kick 10 s, snare 14 s, toms 8 s, bass 46 s, cymbals 12 s, guitar 19 s, hihat 17 s, other 0 s, vocals 19 s (a worker's memory at most 2.6 GB)
+# 20 November 2026, later: the code before the six steps (u_before), with them (u_six), and with float32 too (u_f32), in turn, 3 workers
+u_before1 exit 0 | 2:01.10 wall | user 269.82 s | system 52.15 s | main peak 2730 MB | load 5.53 | 92 C
+  chains    9 made on 3 workers: kick 10 s, snare 14 s, toms 8 s, bass 45 s, cymbals 12 s, guitar 19 s, hihat 16 s, other 0 s, vocals 19 s (a worker's memory at most 2.6 GB)
+u_six1 exit 0 | 1:51.73 wall | user 278.91 s | system 50.45 s | main peak 2729 MB | load 5.24 | 101 C
+  chains    9 made on 3 workers: kick 9 s, snare 12 s, toms 8 s, bass 45 s, cymbals 11 s, guitar 18 s, hihat 16 s, other 0 s, vocals 18 s (a worker's memory at most 2.6 GB)
+u_f32_1 exit 0 | 1:34.10 wall | user 232.11 s | system 41.86 s | main peak 2371 MB | load 4.45 | 94 C
+  chains    9 made on 3 workers: kick 8 s, snare 10 s, toms 6 s, bass 36 s, cymbals 9 s, guitar 14 s, hihat 13 s, other 0 s, vocals 14 s (a worker's memory at most 2.3 GB)
+u_f32_2 exit 0 | 1:35.12 wall | user 236.23 s | system 43.47 s | main peak 2365 MB | load 4.60 | 92 C
+  chains    9 made on 3 workers: kick 8 s, snare 11 s, toms 7 s, bass 38 s, cymbals 9 s, guitar 14 s, hihat 14 s, other 0 s, vocals 14 s (a worker's memory at most 2.3 GB)
+u_six2 exit 0 | 1:52.12 wall | user 281.38 s | system 50.39 s | main peak 2730 MB | load 5.31 | 91 C
+  chains    9 made on 3 workers: kick 10 s, snare 12 s, toms 8 s, bass 44 s, cymbals 11 s, guitar 18 s, hihat 16 s, other 0 s, vocals 19 s (a worker's memory at most 2.6 GB)
+u_before2 exit 0 | 1:59.23 wall | user 264.24 s | system 49.72 s | main peak 2730 MB | load 3.82 | 99 C
+  chains    9 made on 3 workers: kick 10 s, snare 13 s, toms 8 s, bass 44 s, cymbals 12 s, guitar 18 s, hihat 16 s, other 0 s, vocals 18 s (a worker's memory at most 2.6 GB)

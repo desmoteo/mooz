@@ -26,7 +26,7 @@ HOP_S = 0.1
 def _onset_envelope(x: np.ndarray, fs: float) -> np.ndarray:
     """Positive spectral flux, 100 Hz frame rate."""
     nfft, hop = 2048, int(HOP_S * fs / 2)
-    _, _, z = signal.stft(x.mean(axis=1), fs, nperseg=nfft, noverlap=nfft - hop)
+    _, _, z = signal.stft(loudness.mono(x), fs, nperseg=nfft, noverlap=nfft - hop)
     mag = np.log1p(np.abs(z) * 100)
     flux = np.maximum(np.diff(mag, axis=1), 0).sum(axis=0)
     return flux
@@ -81,7 +81,7 @@ def characterise(y: np.ndarray, fs: float, stems: dict[str, np.ndarray] | None, 
     peaks, _ = signal.find_peaks(flux, height=thr, distance=int(0.1 * fr))
     onset_rate = len(peaks) / (len(y) / fs)
     tempo = _tempo(flux, fr)
-    f, p = signal.welch(y.mean(axis=1), fs, nperseg=8192)
+    f, p = signal.welch(loudness.mono(y), fs, nperseg=8192)
     centroid = float((f * p).sum() / (p.sum() + EPS))
     m = {"integrated_lufs": round(lufs, 1), "lra_lu": round(ld.lra, 1), "contrast_lu": round(float(p90 - p10), 1),
          "arc_lu": round(arc, 1), "slope_lu_per_min": round(slope, 2), "onset_rate_per_s": round(onset_rate, 2),
@@ -99,7 +99,7 @@ def characterise(y: np.ndarray, fs: float, stems: dict[str, np.ndarray] | None, 
     guitars = [stems[n] for n in ("guitar", "guitar_left", "guitar_right") if stems and n in stems]
     if guitars:
         g = sum(guitars)
-        band = filtfilt(signal.butter(2, [1000, 6000], "bandpass", fs=fs, output="sos"), g).mean(axis=1)
+        band = filtfilt(signal.butter(2, [1000, 6000], "bandpass", fs=fs, output="sos"), loudness.mono(g))
         _, pg = signal.welch(band, fs, nperseg=4096)
         pg = pg[(np.fft.rfftfreq(4096, 1 / fs) > 1000) & (np.fft.rfftfreq(4096, 1 / fs) < 6000)]
         m["guitar_flatness"] = round(float(np.exp(np.mean(np.log(pg + EPS))) / (np.mean(pg) + EPS)), 3)  # ~1 = noisy/distorted

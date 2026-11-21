@@ -1,0 +1,9 @@
+float64: 1 chains at once:  11.3 s for all ( 11.3 s each) ->  1.0x the work of one in the same time
+float64: 2 chains at once:  14.3 s for all ( 14.3 s each) ->  1.6x the work of one in the same time
+float64: 4 chains at once:  18.8 s for all ( 18.7 s each) ->  2.4x the work of one in the same time
+float64: 6 chains at once:  27.1 s for all ( 26.9 s each) ->  2.5x the work of one in the same time
+float32: 1 chains at once:   9.6 s for all (  9.6 s each) ->  1.0x the work of one in the same time
+float32: 2 chains at once:  11.7 s for all ( 11.6 s each) ->  1.6x the work of one in the same time
+float32: 4 chains at once:  14.7 s for all ( 14.5 s each) ->  2.6x the work of one in the same time
+float32: 6 chains at once:  26.8 s for all ( 26.2 s each) ->  2.1x the work of one in the same time
+float32: 8 chains at once:  38.5 s for all ( 37.7 s each) ->  2.0x the work of one in the same time

@@ -1,0 +1,15 @@
+# 20 November 2026: sep_modes.py, 30 s of Biancaneve, the models at their own overlap (BS-Roformer-SW 2, ep 317 4)
+BS-Roformer-SW.ckpt
+   float32                       10.4 s | GPU 1.5 GB | precision fp32, compiled False
+   autocast float16 (as now)      5.7 s | GPU 1.6 GB | precision autocast, compiled False | from float32, dB re each stem: {'bass': -65, 'drums': -62, 'vocals': -67, 'guitar': -65}
+   native float16                 5.3 s | GPU 0.9 GB | precision native_fp16, compiled False | from float32, dB re each stem: {'bass': -64, 'drums': -61, 'vocals': -66, 'guitar': -64}
+   autocast float16, compiled     2.9 s (first run, compiling: 10 s) | GPU 1.4 GB | precision autocast, compiled True | from float32, dB re each stem: {'bass': -67, 'drums': -63, 'vocals': -69, 'guitar': -67}
+   native float16, compiled       2.9 s (first run, compiling: 5 s) | GPU 0.7 GB | precision native_fp16, compiled True | from float32, dB re each stem: {'bass': -65, 'drums': -62, 'vocals': -66, 'guitar': -65}
+   autocast bfloat16              5.8 s | GPU 1.6 GB | precision autocast, compiled False | from float32, dB re each stem: {'bass': -46, 'drums': -43, 'vocals': -48, 'guitar': -47}
+model_bs_roformer_ep_317_sdr_12.9755.ckpt
+   float32                       34.7 s | GPU 1.6 GB | precision fp32, compiled False
+   autocast float16 (as now)     14.7 s | GPU 1.6 GB | precision autocast, compiled False | from float32, dB re each stem: {'instrumental': -72, 'vocals': -70}
+   native float16                14.1 s | GPU 0.9 GB | precision native_fp16, compiled False | from float32, dB re each stem: {'instrumental': -70, 'vocals': -69}
+   autocast float16, compiled     8.2 s (first run, compiling: 11 s) | GPU 1.2 GB | precision autocast, compiled True | from float32, dB re each stem: {'instrumental': -71, 'vocals': -70}
+   native float16, compiled       8.1 s (first run, compiling: 10 s) | GPU 0.7 GB | precision native_fp16, compiled True | from float32, dB re each stem: {'instrumental': -70, 'vocals': -69}
+   autocast bfloat16             14.7 s | GPU 1.6 GB | precision autocast, compiled False | from float32, dB re each stem: {'instrumental': -54, 'vocals': -53}

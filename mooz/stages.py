@@ -12,6 +12,11 @@
 All stage files share one fixed gain offset (GAIN_DB), so stems and buses keep
 their real levels relative to each other (they line up in a DAW) and the raw
 drum peaks, which go above full scale, do not clip.
+
+The files are encoded on a thread of their own while the run goes on with the next
+stage (a take writes some thirty, about ten seconds of encoding): write() takes its
+copy of the samples and returns, flush() waits for all that is under way. Whoever
+reads or links a stage file flushes first.
 """
 
 from __future__ import annotations
@@ -20,12 +25,32 @@ import json
 import os
 import shutil
 import subprocess
+import threading
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
 import soundfile as sf
 
 GAIN_DB = -12.0
+
+_encoder: ThreadPoolExecutor | None = None  # one thread for all the stage files of the process, in order
+_waiting = threading.BoundedSemaphore(2)    # samples held for it: one file being encoded and one waiting, no more
+
+
+def _on_the_encoder(job, *args) -> Future:
+    global _encoder
+    if _encoder is None:
+        _encoder = ThreadPoolExecutor(1, thread_name_prefix="mooz-stages")
+    _waiting.acquire()
+
+    def run():
+        try:
+            job(*args)
+        finally:
+            _waiting.release()
+
+    return _encoder.submit(run)
 
 
 class StageWriter:
@@ -34,6 +59,7 @@ class StageWriter:
         self.fmt = fmt
         self.written: list[str] = []
         self.files: dict[str, Path] = {}  # stage name -> the file it is in
+        self._pending: list[Future] = []
         if self.root:
             self.root.mkdir(parents=True, exist_ok=True)
 
@@ -45,14 +71,20 @@ class StageWriter:
             return
         path = self.root / f"{rel}.{'flac' if self.fmt == 'flac' else 'wav'}"
         path.parent.mkdir(parents=True, exist_ok=True)
-        y = x * 10 ** (GAIN_DB / 20)
+        if self.fmt == "mp3" and shutil.which("ffmpeg"):
+            path = path.with_suffix(".mp3")
+        y = x * 10 ** (GAIN_DB / 20)  # its own copy: the run goes on with x
+        self._pending.append(_on_the_encoder(self._encode, path, y, fs))
+        self.written.append(rel)
+        self.files[rel] = path
+
+    def _encode(self, path: Path, y: np.ndarray, fs: int) -> None:
         peak = float(np.abs(y).max()) if y.size else 0.0
         if peak >= 1.0:  # should not happen with the offset; never clip a listening copy
             y = y / (peak * 1.0001)
-        if self.fmt == "mp3" and shutil.which("ffmpeg"):
+        if path.suffix == ".mp3":
             tmp = path.with_suffix(".tmp.wav")
             sf.write(tmp, y.astype(np.float32), fs, subtype="FLOAT")
-            path = path.with_suffix(".mp3")
             path.unlink(missing_ok=True)
             subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", str(tmp), "-codec:a", "libmp3lame", "-b:a", "256k",
                             str(path)], check=True)
@@ -61,8 +93,12 @@ class StageWriter:
             # never written through: the file there may be a kept chain's, under a second name (adopt)
             path.unlink(missing_ok=True)
             sf.write(path, y, fs, subtype="PCM_24", format="FLAC" if self.fmt == "flac" else "WAV")
-        self.written.append(rel)
-        self.files[rel] = path
+
+    def flush(self) -> None:
+        """Wait until every file written so far is on the disk; what its encoding raised is raised here."""
+        pending, self._pending = self._pending, []
+        for job in pending:
+            job.result()
 
     def adopt(self, rel: str, src: Path) -> None:
         """A stage file an earlier run wrote (chaincache.py), put in its place: a second name for

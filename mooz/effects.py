@@ -18,8 +18,12 @@ import numpy as np
 from scipy import signal
 from scipy.ndimage import maximum_filter1d, uniform_filter1d
 
-from . import dynamics, eq, loudness, stereo
+from . import dynamics, eq, expr, loudness, progress, stereo
 from .loudness import EPS, filtfilt
+
+# How many times cleanup_track() and studio_track() call progress.tick(): once after each of their processors,
+# switched on or not, so that whoever follows a chain (the web app's graph) knows how far through it is
+CLEANUP_TICKS, STUDIO_TICKS = 4, 18
 
 
 def _bandpass_sos(freq_hz: float, q: float, fs: float) -> np.ndarray:
@@ -70,7 +74,7 @@ def dynamic_eq(x: np.ndarray, fs: float, bands: list[dict], active: np.ndarray
             gr = -((threshold - rel).clip(0) * (1 - 1 / b["ratio"])).clip(0, b["max_boost_db"]) * gate * present
             gr = -dynamics.attack_smooth(dynamics.release_hold(-gr, b.get("release_ms", 120.0), fs),
                                          b.get("attack_ms", 20.0), fs)
-            x = x + (10 ** (-gr / 20) - 1)[:, None] * band
+            x = x + expr.times(band, expr.linear(-gr) - 1)
             stats.append({"freq_hz": b["freq_hz"], "mode": "boost", "avg_cut_db": round(float(gr[use].mean()), 2),
                           "max_cut_db": round(float(gr.min()), 2)})
             traces.append(dynamics.decimate(gr, fs, np.min))
@@ -78,7 +82,7 @@ def dynamic_eq(x: np.ndarray, fs: float, bands: list[dict], active: np.ndarray
         threshold = float(np.median(rel[use][::16])) + b["threshold_db"]
         gr = dynamics.gain_reduction(rel, threshold, b["ratio"], 6.0).clip(0, b["max_cut_db"]) * gate
         gr = dynamics.attack_smooth(dynamics.release_hold(gr, b.get("release_ms", 80.0), fs), b.get("attack_ms", 2.0), fs)
-        x = x - (1 - 10 ** (-gr / 20))[:, None] * band
+        x = x - expr.times(band, 1 - expr.linear(-gr))
         stats.append({"freq_hz": b["freq_hz"], "avg_cut_db": round(float(gr[use].mean()), 2),
                       "max_cut_db": round(float(gr.max()), 2)})
         traces.append(dynamics.decimate(gr, fs))
@@ -157,12 +161,12 @@ def resonance_suppressor(x: np.ndarray, fs: float, cfg: dict) -> tuple[np.ndarra
 
 def _shape(x: np.ndarray, fs: float, attack: float, sustain: float, max_db: float) -> np.ndarray:
     """Gain (dB per sample) of a level-independent attack/sustain shaper."""
-    a = np.abs(x).max(axis=1)
+    a = loudness.peak(x)
     fast = dynamics.envelope(a, fs, 0.5, 30.0)
     slow = dynamics.envelope(a, fs, 15.0, 30.0)
     long = dynamics.envelope(a, fs, 0.5, 300.0)
-    onset = 20 * np.log10((fast + EPS) / (slow + EPS)).clip(0)
-    tail = 20 * np.log10((long + EPS) / (fast + EPS)).clip(0)
+    onset = expr.ratio_db(fast, slow, EPS).clip(0)
+    tail = expr.ratio_db(long, fast, EPS).clip(0)
     g = (attack * onset + sustain * tail).clip(-max_db, max_db)
     return dynamics.attack_smooth(g, 1.0, fs)
 
@@ -179,7 +183,7 @@ def transient_shaper(x: np.ndarray, fs: float, attack, sustain, max_db: float, c
     if not crossovers_hz:
         g = _shape(x, fs, float(attack), float(sustain), max_db)
         stats = {"max_boost_db": round(float(g.max()), 2), "max_cut_db": round(float(-g.min()), 2)}
-        return x * (10 ** (g / 20))[:, None], stats, {"boost": dynamics.decimate(g, fs, np.max),
+        return expr.gained(x, g), stats, {"boost": dynamics.decimate(g, fs, np.max),
                                                       "cut": dynamics.decimate(g, fs, np.min)}
     n = len(crossovers_hz) + 1
     if len(attack) != n or len(sustain) != n:
@@ -190,7 +194,7 @@ def transient_shaper(x: np.ndarray, fs: float, attack, sustain, max_db: float, c
     edges = [0.0, *sorted(crossovers_hz), fs / 2]
     for i, (band, a, su) in enumerate(zip(dynamics.split_bands(x, fs, crossovers_hz), attack, sustain)):
         g = _shape(band, fs, a, su, max_db)
-        out += band * (10 ** (g / 20))[:, None]
+        out += expr.gained(band, g)
         b, c = dynamics.decimate(g, fs, np.max), dynamics.decimate(g, fs, np.min)
         boost = b if boost is None else np.maximum(boost, b)
         cut = c if cut is None else np.minimum(cut, c)
@@ -204,7 +208,7 @@ def transient_shaper(x: np.ndarray, fs: float, attack, sustain, max_db: float, c
 # --- kick: detection, EQ and kick-triggered ducking -------------------------------------------
 
 def _kick_onsets(x: np.ndarray, fs: float) -> np.ndarray:
-    low = filtfilt(signal.butter(2, [40, 150], "bandpass", fs=fs, output="sos"), x).mean(axis=1)
+    low = filtfilt(signal.butter(2, [40, 150], "bandpass", fs=fs, output="sos"), loudness.mono(x))
     env = dynamics.envelope(np.abs(low), fs, 1.0, 50.0)
     peaks, _ = signal.find_peaks(env, height=np.percentile(env, 90), distance=int(0.15 * fs))
     return peaks
@@ -213,7 +217,7 @@ def _kick_onsets(x: np.ndarray, fs: float) -> np.ndarray:
 def kick_hits(x: np.ndarray, fs: float) -> np.ndarray:
     """Start of each kick hit: where the low-band envelope first reaches half of
     the hit's peak (within 40 ms before it)."""
-    low = filtfilt(signal.butter(2, [40, 150], "bandpass", fs=fs, output="sos"), x).mean(axis=1)
+    low = filtfilt(signal.butter(2, [40, 150], "bandpass", fs=fs, output="sos"), loudness.mono(x))
     env = dynamics.envelope(np.abs(low), fs, 1.0, 50.0)
     peaks, _ = signal.find_peaks(env, height=np.percentile(env, 90), distance=int(0.15 * fs))
     look = int(0.04 * fs)
@@ -251,7 +255,7 @@ def kick_shaper(x: np.ndarray, fs: float, cfg: dict) -> tuple[np.ndarray, dict, 
         g[a:b] = np.where(np.abs(seg) > np.abs(g[a:b]), seg, g[a:b])  # overlapping hits: strongest wins
     g = dynamics.attack_smooth(g, 0.5, fs)
     low = filtfilt(signal.butter(2, cfg["fmax_hz"], "low", fs=fs, output="sos"), x)
-    y = x + (10 ** (g / 20) - 1)[:, None] * low
+    y = x + expr.times(low, expr.linear(g) - 1)
     stats = {"hits": int(len(hits)), "punch_db": cfg["punch_db"], "tail_db": cfg["tail_db"]}
     return y, stats, {"boost": dynamics.decimate(g, fs, np.max), "cut": dynamics.decimate(g, fs, np.min)}
 
@@ -278,8 +282,8 @@ TRIGGER_BANDS = {"kick": (40.0, 150.0), "snare": (150.0, 400.0), "toms": (70.0, 
 def hit_trigger(x: np.ndarray, fs: float, lo: float, hi: float) -> np.ndarray:
     """0..1 per sample: how strongly a hit is happening in the lo..hi band of x
     (1 within 12 dB of the loudest hits, 0 more than 12 dB below them)."""
-    band = filtfilt(signal.butter(2, [lo, hi], "bandpass", fs=fs, output="sos"), x).mean(axis=1)
-    env_db = 20 * np.log10(dynamics.envelope(np.abs(band), fs, 1.0, 40.0) + EPS)
+    band = filtfilt(signal.butter(2, [lo, hi], "bandpass", fs=fs, output="sos"), loudness.mono(x))
+    env_db = expr.db(dynamics.envelope(np.abs(band), fs, 1.0, 40.0), EPS)
     top = np.percentile(env_db, 99)
     return ((env_db - (top - 12)) / 12).clip(0, 1).astype(np.float32)
 
@@ -305,7 +309,7 @@ def duck(x: np.ndarray, fs: float, trigger: np.ndarray, fmin_hz: float, fmax_hz:
     snare-wire rattle the kick sets off in the hi-hat stem."""
     gr = trigger.astype(np.float64) * depth_db
     gr = dynamics.attack_smooth(dynamics.release_hold(gr, release_ms, fs), 2.0, fs)
-    y = x - (1 - 10 ** (-gr / 20))[:, None] * _band(x, fs, fmin_hz, fmax_hz)
+    y = x - expr.times(_band(x, fs, fmin_hz, fmax_hz), 1 - expr.linear(-gr))
     return y, {"max_db": round(float(gr.max()), 2), "avg_db": round(float(gr.mean()), 2)}, dynamics.decimate(gr, fs)
 
 
@@ -316,23 +320,23 @@ def hit_gate(x: np.ndarray, fs: float, cfg: dict) -> tuple[np.ndarray, dict, np.
     trig = hit_trigger(x, fs, cfg["fmin_hz"], cfg["fmax_hz"]).astype(np.float64)
     # sharp onsets open it fully too: a real hit is impulsive, while the body resonating
     # along with the bass only swells (and opens a level-driven gate only partly)
-    band = np.abs(_band(x, fs, cfg["fmin_hz"], cfg["fmax_hz"]).mean(axis=1))
+    band = np.abs(_band(loudness.mono(x), fs, cfg["fmin_hz"], cfg["fmax_hz"]))
     fast, slow = dynamics.envelope(band, fs, 0.5, 20.0), dynamics.envelope(band, fs, 10.0, 40.0)
-    lev = 20 * np.log10(fast + EPS)
-    onset = (20 * np.log10((fast + EPS) / (slow + EPS)) > 6.0) & (lev > np.percentile(lev, 99.5) - 24.0)
+    lev = expr.db(fast, EPS)
+    onset = (expr.ratio_db(fast, slow, EPS) > 6.0) & (lev > np.percentile(lev, 99.5) - 24.0)
     open_ = dynamics.release_hold(np.maximum(trig, onset.astype(np.float64)), cfg["release_ms"], fs)
     open_ = np.minimum(open_ * 2.0, 1.0)  # fully open on all but faint hits
     la = max(2, int(0.005 * fs)) // 2 * 2  # look 5 ms ahead so the gate is open before the attack
     open_ = maximum_filter1d(open_, size=la + 1, origin=-(la // 2), mode="nearest")
     open_ = dynamics.attack_smooth(open_, 1.0, fs)
     gr = cfg["depth_db"] * (1 - open_)
-    y = x * (10 ** (-gr / 20))[:, None]
+    y = expr.gained(x, -gr)
     if cfg.get("buzz_extra_db", 0.0) > 0:
         # the wires' buzz band goes further down between hits (it is all buzz there); the hit,
         # its body and its own wire decay (while the gate is open) are untouched
         extra = cfg["buzz_extra_db"] * (1 - open_)
         band = _band(y, fs, *cfg.get("buzz_band_hz", (1200.0, 12000.0)))
-        y = y - (1 - 10 ** (-extra / 20))[:, None] * band
+        y = y - expr.times(band, 1 - expr.linear(-extra))
     return y, {"avg_db": round(float(gr.mean()), 2), "max_db": round(float(gr.max()), 2)}, dynamics.decimate(gr, fs)
 
 
@@ -344,7 +348,7 @@ def _harmonics(src: np.ndarray, fs: float, drive: float, even: float, out_lo: fl
     to amount_db relative to src. The source is level-normalised before the
     waveshaper, so quiet and loud passages get the same amount."""
     # (the running mean can dip a hair below zero numerically: clamp before the sqrt)
-    env = np.sqrt(np.maximum(uniform_filter1d(np.mean(src * src, axis=1), max(1, int(0.005 * fs))), 0.0)) + 1e-4
+    env = np.sqrt(np.maximum(uniform_filter1d(loudness.power(src), max(1, int(0.005 * fs))), 0.0)) + 1e-4
     u = src / env[:, None]
     gen = np.empty_like(u)
     for s, e, a, up in loudness.oversampled_chunks(u, 4):
@@ -401,7 +405,7 @@ def expander(x: np.ndarray, fs: float, cfg: dict) -> tuple[np.ndarray, dict, np.
     open_ = maximum_filter1d(open_, size=la + 1, origin=-(la // 2), mode="nearest")
     open_ = dynamics.attack_smooth(open_, 2.0, fs)
     gr = (rng - open_).clip(0, rng)
-    y = x * (10 ** (-gr / 20))[:, None]
+    y = expr.gained(x, -gr)
     return y, {"threshold_db": round(thr, 1), "avg_db": round(float(gr.mean()), 2),
                "closed_pct": round(100 * float(np.mean(gr > cfg["range_db"] / 2)), 1)}, dynamics.decimate(gr, fs)
 
@@ -425,16 +429,16 @@ def kit_gate(x: np.ndarray, fs: float, cfg: dict, triggers: dict[str, np.ndarray
     kit = [triggers[k] for k in ("kick", "snare", "toms") if k in triggers]
     # any kit hit within ~11 dB of the song's loudest counts: soft build-ups are playing too
     open_ = _hold(np.max(kit, axis=0) > 0.08, fs, 0.3, cfg["hold_s"]) if kit else np.ones(len(x))
-    band = np.abs(_band(x, fs, 2000.0, 12000.0).mean(axis=1))
+    band = np.abs(_band(loudness.mono(x), fs, 2000.0, 12000.0))
     fast, slow = dynamics.envelope(band, fs, 0.5, 30.0), dynamics.envelope(band, fs, 20.0, 30.0)
-    onset = 20 * np.log10((fast + EPS) / (slow + EPS))
-    lev = 20 * np.log10(fast + EPS)
+    onset = expr.ratio_db(fast, slow, EPS)
+    lev = expr.db(fast, EPS)
     own = (onset > cfg["own_onset_db"]) & (lev > np.percentile(lev, 99) - 20)
     open_ = np.maximum(open_, _hold(own, fs, 0.05, cfg["own_hold_s"]))
     # smooth: open quickly, close slowly
     open_ = dynamics.attack_smooth(dynamics.release_hold(open_, 300.0, fs), 10.0, fs).clip(0, 1)
     gr = cfg["depth_db"] * (1 - open_)
-    y = x * (10 ** (-gr / 20))[:, None]
+    y = expr.gained(x, -gr)
     stats = {"closed_pct": round(100 * float(np.mean(gr > cfg["depth_db"] / 2)), 1),
              "removed_db": round(float(10 * np.log10((np.mean(y * y) + EPS) / (np.mean(x * x) + EPS))), 2),
              "_gr": gr.astype(np.float32)}  # the whole curve: the original recording follows it ([mix])
@@ -515,6 +519,7 @@ def cleanup_track(x: np.ndarray, fs: float, cfg: dict, triggers: dict | None, st
         stats["expander"]["below_db"] = round(ex["below_db"], 1)
         if detail is not None:
             detail["traces"]["gate"] = tr
+    progress.tick()
     hc = cfg["harmonic_clean"]
     if cfg["note_eq"]["enabled"]:  # the bass note by note: harmonic space and attack (note_eq.py)
         from . import note_eq
@@ -527,12 +532,14 @@ def cleanup_track(x: np.ndarray, fs: float, cfg: dict, triggers: dict | None, st
         stats["_pitch"] = pitch  # reused by the fundamental (stage 2); not part of the report
         x, stats["harmonic_clean"] = augment.harmonic_clean(x, fs, hc, *pitch)
     x = _ducks(x, fs, cfg, triggers, "cleanup", stats, detail)
+    progress.tick()
     gt = cfg["gate"]
     if gt["enabled"]:
         x, stats["gate"], tr = hit_gate(x, fs, gt)
         if detail is not None:
             t = detail["traces"]
             t["gate"] = tr if "gate" not in t else np.maximum(t["gate"], tr)
+    progress.tick()
     kg = cfg["kit_gate"]
     if kg["enabled"] and triggers:
         x, stats["kit_gate"], tr = kit_gate(x, fs, kg, triggers)
@@ -540,6 +547,7 @@ def cleanup_track(x: np.ndarray, fs: float, cfg: dict, triggers: dict | None, st
         if detail is not None:
             t = detail["traces"]
             t["gate"] = tr if "gate" not in t else np.maximum(t["gate"], tr)
+    progress.tick()
     return x
 
 
@@ -558,6 +566,7 @@ def studio_track(x: np.ndarray, fs: float, cfg: dict, stats: dict, detail: dict 
         x, stats["augment"], samples = augment.drum_augment(x, fs, au, triggers)
         if samples:
             stats["_samples"] = samples  # for the stage files; not part of the report
+    progress.tick()
     ca = cfg["cymbal_augment"]
     if ca["enabled"]:  # studio crash / ride / bell hits on the cymbals' hits, by kind (augment.py)
         x, stats["cymbal_augment"], samples = augment.cymbal_augment(x, fs, ca)
@@ -565,6 +574,7 @@ def studio_track(x: np.ndarray, fs: float, cfg: dict, stats: dict, detail: dict 
             stats["_samples"] = stats.get("_samples", []) + samples
     grid = eq.log_grid(fs)
     bands = list(cfg["eq"])
+    progress.tick()
     k = cfg["kick_eq"]
     if k["enabled"]:
         f0 = kick_frequency(x, fs, k["fmin_hz"], k["fmax_hz"])
@@ -572,6 +582,7 @@ def studio_track(x: np.ndarray, fs: float, cfg: dict, stats: dict, detail: dict 
             bands.append({"type": "peak", "freq_hz": f0, "gain_db": k["gain_db"], "q": k["q"]})
             stats["kick_hz"] = round(f0, 1)
     curve = eq.manual_curve(grid, bands, fs) if bands else None
+    progress.tick()
     tm = cfg["tone_match"]
     if tm["enabled"] and prof and target and len(prof["tone"]) == len(grid):
         # the target: the band's own median tone for this instrument, blended with the tone of raw
@@ -588,6 +599,7 @@ def studio_track(x: np.ndarray, fs: float, cfg: dict, stats: dict, detail: dict 
             stats["tone_match_db"] = eq.at_freqs(grid, match)
             stats["tone_reference"] = round(w if band is not None else 1.0, 2)
             curve = match if curve is None else curve + match
+    progress.tick()
     if curve is not None:
         h = eq.design_fir(grid, curve, fs, 8191)
         x = eq.apply_fir(x, h)
@@ -596,6 +608,7 @@ def studio_track(x: np.ndarray, fs: float, cfg: dict, stats: dict, detail: dict 
         if detail is not None:
             detail["eq_db"] = applied
     active = loudness.active_mask(x, fs)
+    progress.tick()
     if cfg["dynamic_eq"]:
         x, stats["dynamic_eq"], traces = dynamic_eq(x, fs, cfg["dynamic_eq"], active)
         if detail is not None:
@@ -603,6 +616,7 @@ def studio_track(x: np.ndarray, fs: float, cfg: dict, stats: dict, detail: dict 
                 detail["dyn_eq"].append({"freq_hz": band["freq_hz"], "trace": tr,
                                          "max_curve": dynamic_eq_shape(grid, band, st["max_cut_db"], fs),
                                          "avg_curve": dynamic_eq_shape(grid, band, st["avg_cut_db"], fs)})
+    progress.tick()
     if cfg["resonance"]["enabled"]:
         x, stats["resonance"], tr = resonance_suppressor(x, fs, cfg["resonance"])
         if detail is not None:
@@ -612,6 +626,7 @@ def studio_track(x: np.ndarray, fs: float, cfg: dict, stats: dict, detail: dict 
                 "max_curve": -np.interp(lg, np.log2(tr["freqs"]), tr["max_cut_db"], left=0, right=0),
             }
             detail["traces"]["resonance"] = tr["timeline"]
+    progress.tick()
     c = cfg["compressor"]
     if c["enabled"]:
         x, gr, stats["compressor"] = dynamics.compress(x, fs, **{k: c[k] for k in dynamics.BAND_PARAMS},
@@ -619,6 +634,7 @@ def studio_track(x: np.ndarray, fs: float, cfg: dict, stats: dict, detail: dict 
         if detail is not None:
             detail["traces"]["compressor"] = dynamics.decimate(gr, fs)
         del gr
+    progress.tick()
     c2 = cfg["compressor2"]
     if c2["enabled"]:  # serial compression: e.g. a fast one catching peaks, then a slow one pinning the level
         x, gr, stats["compressor2"] = dynamics.compress(x, fs, **{k: c2[k] for k in dynamics.BAND_PARAMS},
@@ -627,11 +643,13 @@ def studio_track(x: np.ndarray, fs: float, cfg: dict, stats: dict, detail: dict 
             tr = dynamics.decimate(gr, fs)
             detail["traces"]["compressor"] = np.maximum(detail["traces"].get("compressor", tr), tr)
         del gr
+    progress.tick()
     ks = cfg["kick_shaper"]
     if ks["enabled"]:
         x, stats["kick_shaper"], tr = kick_shaper(x, fs, ks)
         if detail is not None:
             detail["traces"]["kick_shaper"] = tr
+    progress.tick()
     t = cfg["transient"]
     if t["enabled"]:
         attack = t["attack"]
@@ -644,31 +662,39 @@ def studio_track(x: np.ndarray, fs: float, cfg: dict, stats: dict, detail: dict 
                                                      t["crossovers_hz"])
         if detail is not None:
             detail["traces"]["transient"] = tr
+    progress.tick()
     bf = cfg["bass_fundamental"]
     if bf["enabled"]:  # the bass's own fundamental, pitch-tracked, raised in phase (augment.py)
         x, stats["bass_fundamental"], tr = augment.bass_fundamental(x, fs, bf, stats.get("_pitch"))
         if detail is not None and tr.size > 1:
             detail["traces"]["fundamental"] = tr
+    progress.tick()
     if cfg["saturator"]["enabled"]:
         x, stats["saturator"] = saturator(x, fs, cfg["saturator"])
+    progress.tick()
     if cfg["grit"]["enabled"]:  # parallel band distortion: teeth that cut through the guitars
         from . import space
 
         x, stats["grit"] = space.grit(x, fs, cfg["grit"])
+    progress.tick()
     if cfg["dual"]["enabled"]:  # split-band bass chain: clean mono lows, driven + chorused highs
         from . import space
 
         x, stats["dual"] = space.dual(x, fs, cfg["dual"])
+    progress.tick()
     if cfg["exciter"]["enabled"]:
         x = exciter(x, fs, cfg["exciter"])
+    progress.tick()
     if cfg["bass_enhancer"]["enabled"]:
         x = bass_enhancer(x, fs, cfg["bass_enhancer"])
+    progress.tick()
     ne = cfg["note_eq"]
     if ne["enabled"] and ne["after_chain"]:  # again on what the tone match, exciter and transients brought up
         from . import note_eq
 
         x, stats["note_eq_after_chain"], _ = note_eq.note_eq(x, fs, ne | {"keep_above_hz": ne["after_chain_keep_above_hz"]},
                                                              cfg["bass_fundamental"])
+    progress.tick()
     return x
 
 
@@ -684,10 +710,10 @@ def mix_track(x: np.ndarray, fs: float, cfg: dict, triggers: dict | None, stats:
             # keep the track's power: folding a roomy stem to mono would otherwise lose level
             p_in = float(np.mean(x * x))
             x = stereo.mid_side(x, fs, 0.0, cfg["width"])
-            x *= np.sqrt(p_in / (float(np.mean(x * x)) + EPS))
+            x *= float(np.sqrt(p_in / (float(np.mean(x * x)) + EPS)))
         if cfg["pan"]:
             th = (cfg["pan"] + 1) * np.pi / 4  # constant-power pan law: -1 left, 0 unchanged, +1 right
-            x = x * (np.sqrt(2) * np.array([np.cos(th), np.sin(th)]))
+            x = x * (np.sqrt(2) * np.array([np.cos(th), np.sin(th)])).astype(x.dtype, copy=False)
     if cfg["gain_db"]:
         x = x * 10 ** (cfg["gain_db"] / 20)
     return x

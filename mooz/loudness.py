@@ -2,12 +2,55 @@
 
 from __future__ import annotations
 
+import os
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from itertools import islice
 
 import numpy as np
 from scipy import signal
 
 EPS = 1e-12
+
+# Threads for the loops that scipy and numpy run outside the interpreter's lock (the oversampling). They change
+# no result: the same pieces are computed, in any order, and put together in theirs. MOOZ_THREADS sets the number
+THREADS = max(1, int(os.environ.get("MOOZ_THREADS") or min(8, (os.cpu_count() or 2) // 2)))
+_pool: tuple[int, int, ThreadPoolExecutor] | None = None
+
+
+def pool() -> ThreadPoolExecutor | None:
+    """This process's thread pool (None with THREADS = 1). A child process makes its own."""
+    global _pool
+    if THREADS <= 1:
+        return None
+    if _pool is None or _pool[:2] != (os.getpid(), THREADS):
+        _pool = (os.getpid(), THREADS, ThreadPoolExecutor(THREADS, thread_name_prefix="mooz"))
+    return _pool[2]
+
+
+# numpy reduces along an axis of length 2 one pair at a time, six times slower than the two columns taken as
+# arrays. These give the same values as the expressions they stand for, to the last bit.
+
+def mono(x: np.ndarray) -> np.ndarray:
+    """The mean of the channels: x.mean(axis=1)."""
+    if x.ndim == 2 and x.shape[1] == 2:
+        return (x[:, 0] + x[:, 1]) * 0.5
+    return x.mean(axis=1)
+
+
+def peak(x: np.ndarray) -> np.ndarray:
+    """The largest magnitude of the channels, per sample: np.abs(x).max(axis=1)."""
+    if x.ndim == 2 and x.shape[1] == 2:
+        return np.maximum(np.abs(x[:, 0]), np.abs(x[:, 1]))
+    return np.abs(x).max(axis=1)
+
+
+def power(x: np.ndarray) -> np.ndarray:
+    """The mean square of the channels, per sample: np.mean(x * x, axis=1)."""
+    if x.ndim == 2 and x.shape[1] == 2:
+        return (x[:, 0] * x[:, 0] + x[:, 1] * x[:, 1]) * 0.5
+    return np.mean(x * x, axis=1)
 
 
 def k_weighting_sos(fs: float) -> np.ndarray:
@@ -36,13 +79,34 @@ def k_weighting_sos(fs: float) -> np.ndarray:
     return np.array([shelf, highpass])
 
 
-def _segment_energy(x: np.ndarray, fs: float) -> tuple[np.ndarray, int]:
-    """K-weighted energy, summed over channels, per 100 ms segment."""
-    z = signal.sosfilt(k_weighting_sos(fs), x, axis=0)
+def _k_weighted(x: np.ndarray, fs: float) -> np.ndarray:
+    """x through the K-weighting filter, its channels on a thread each where there are threads
+    (the same samples as the filter along the whole array gives)."""
+    sos = k_weighting_sos(fs)
+    ex = pool() if x.shape[1] > 1 else None
+    if ex is None:
+        return signal.sosfilt(sos, x, axis=0)
+    z = np.empty(x.shape, dtype=np.result_type(x.dtype, np.float64))
+
+    def channel(c: int) -> None:
+        z[:, c] = signal.sosfilt(sos, x[:, c])
+
+    for _ in ex.map(channel, range(x.shape[1])):
+        pass
+    return z
+
+
+def _energy(z: np.ndarray, fs: float) -> tuple[np.ndarray, int]:
+    """The energy of a K-weighted signal, summed over its channels, per 100 ms segment."""
     p = np.einsum("ij,ij->i", z, z)
     seg = int(round(0.1 * fs))
     n = len(p) // seg
     return p[: n * seg].reshape(n, seg).sum(axis=1), seg
+
+
+def _segment_energy(x: np.ndarray, fs: float) -> tuple[np.ndarray, int]:
+    """K-weighted energy, summed over channels, per 100 ms segment."""
+    return _energy(_k_weighted(x, fs), fs)
 
 
 def _windows(energy: np.ndarray, seg: int, nseg: int) -> np.ndarray:
@@ -81,11 +145,14 @@ class Loudness:
     short_term: np.ndarray  # LUFS, 3 s windows every 100 ms
 
 
-def measure(x: np.ndarray, fs: float) -> Loudness:
-    energy, seg = _segment_energy(x, fs)
+def _measure(energy: np.ndarray, seg: int) -> Loudness:
     mom = _windows(energy, seg, 4)
     st = _windows(energy, seg, 30)
     return Loudness(_integrated(mom), _lra(st), _lufs(mom), _lufs(st))
+
+
+def measure(x: np.ndarray, fs: float) -> Loudness:
+    return _measure(*_segment_energy(x, fs))
 
 
 def integrated(x: np.ndarray, fs: float) -> float:
@@ -107,23 +174,47 @@ def active_mask(x: np.ndarray, fs: float, rel_lu: float = -20.0) -> np.ndarray:
     return np.pad(mask, (0, len(x) - len(mask)))
 
 
+def _spans(n: int, chunk: int, margin: int) -> list[tuple[int, int, int, int]]:
+    return [(s, min(n, s + chunk), max(0, s - margin), min(n, s + chunk + margin)) for s in range(0, n, chunk)]
+
+
 def oversampled_chunks(x: np.ndarray, factor: int, chunk: int = 1 << 17, margin: int = 64):
     """Yield (s, e, a, up): x[a:b] oversampled by factor, where x[s:e] is the chunk
-    and up[(s-a)*factor:(e-a)*factor] is its exact (margin-protected) part."""
-    n = len(x)
-    for s in range(0, n, chunk):
-        e = min(n, s + chunk)
-        a, b = max(0, s - margin), min(n, e + margin)
-        yield s, e, a, signal.resample_poly(x[a:b], factor, 1, axis=0)
+    and up[(s-a)*factor:(e-a)*factor] is its exact (margin-protected) part. The chunks come
+    in order; the next few are being oversampled on other threads meanwhile, so x must not
+    change while they are read."""
+    up = lambda sp: signal.resample_poly(x[sp[2] : sp[3]], factor, 1, axis=0)  # noqa: E731
+    spans = iter(_spans(len(x), chunk, margin))
+    ex = pool()
+    if ex is None:
+        for sp in spans:
+            yield sp[0], sp[1], sp[2], up(sp)
+        return
+    ahead = deque((sp, ex.submit(up, sp)) for sp in islice(spans, THREADS))
+    while ahead:
+        sp, made = ahead.popleft()
+        nxt = next(spans, None)
+        if nxt is not None:
+            ahead.append((nxt, ex.submit(up, nxt)))
+        yield sp[0], sp[1], sp[2], made.result()
 
 
 def true_peak_envelope(x: np.ndarray, factor: int = 4) -> np.ndarray:
     """Per-sample maximum |x| over channels and oversampled phases (BS.1770 true peak)."""
+    def part(sp):
+        s, e, a, b = sp
+        up = np.abs(signal.resample_poly(x[a:b], factor, 1, axis=0)[(s - a) * factor : (e - a) * factor]).reshape(e - s, -1)
+        m = up[:, 0].copy()  # the maximum over the phases and channels, column by column (see mono)
+        for j in range(1, up.shape[1]):
+            np.maximum(m, up[:, j], out=m)
+        return m
+
     env = np.empty(len(x))
-    for s, e, a, up in oversampled_chunks(x, factor):
-        part = np.abs(up[(s - a) * factor : (e - a) * factor])
-        env[s:e] = part.reshape(e - s, -1).max(axis=1)
-    np.maximum(env, np.abs(x).max(axis=1), out=env)
+    spans = _spans(len(x), 1 << 17, 64)
+    ex = pool()
+    for sp, m in zip(spans, ex.map(part, spans) if ex else map(part, spans)):
+        env[sp[0] : sp[1]] = m
+    np.maximum(env, peak(x), out=env)
     return env
 
 
@@ -139,24 +230,35 @@ def channel_balance_db(x: np.ndarray, fs: float) -> float:
 
 
 def summary(x: np.ndarray, fs: float) -> tuple[dict, Loudness]:
-    ld = measure(x, fs)
+    z = _k_weighted(x, fs)  # once, for the loudness and for each channel's (channel_balance_db filters each again)
+    ld = _measure(*_energy(z, fs))
+    one = lambda c: _integrated(_windows(*_energy(z[:, c : c + 1], fs), 4))  # noqa: E731
+    balance = one(0) - one(1) if x.shape[1] == 2 else 0.0
+    del z
     tp = true_peak_db(x)
     values = {
         "integrated_lufs": ld.integrated,
         "lra_lu": ld.lra,
         "true_peak_dbtp": tp,
         "plr_db": tp - ld.integrated,
-        "balance_db": channel_balance_db(x, fs),
+        "balance_db": balance,
     }
     return {k: round(v, 1) + 0.0 for k, v in values.items()}, ld  # + 0.0 drops "-0.0"
 
 
 def filtfilt(sos: np.ndarray, x: np.ndarray) -> np.ndarray:
-    """Zero-phase filtering along time, one channel at a time (halves the
-    temporary memory of scipy's sosfiltfilt on stereo signals)."""
+    """Zero-phase filtering along time, channel by channel (scipy's sosfiltfilt on a stereo
+    signal needs more temporary memory), the channels on a thread each where there are threads:
+    the same samples, a third less time, both channels' temporaries held at once. Where only the
+    mono sum of the result is wanted, filter mono(x): half the work, and the same to rounding."""
     if x.ndim == 1:
         return signal.sosfiltfilt(sos, x)
     out = np.empty_like(x)
-    for c in range(x.shape[1]):
+
+    def channel(c: int) -> None:
         out[:, c] = signal.sosfiltfilt(sos, x[:, c])
+
+    ex = pool() if x.shape[1] > 1 else None
+    for _ in ex.map(channel, range(x.shape[1])) if ex else map(channel, range(x.shape[1])):
+        pass
     return out

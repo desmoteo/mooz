@@ -63,8 +63,17 @@ Removing a project from the list deletes nothing else.
 - **What is up to date is left as it is.** A take already mastered with these very settings,
   recordings and program, all its files there, is not made again: its row in the job says "up to
   date", and a job where nothing is to do says so. So a job that stopped half-way is started again
-  and goes on where it stopped. "Also what is up to date" makes those again too
+  and goes on where it stopped. "Also masters that are up to date" makes those again too
   (`--again`); the take page's "Remaster this take" always does.
+- **The separated stems are kept whatever is ticked there** (they depend on the recording and the
+  separation's settings, and are the slow part), so a master made again starts from the same
+  stems: on the job's graph the separation and its stems are dashed, "kept from an earlier run".
+  "Separate again too" (20 November, `--separate-again`) is for when the stems themselves are
+  wanted new: each track of the chosen takes is separated once more, its kept stems replaced,
+  and the takes mastered again (the first box is then ticked with it). With "Separate only" it
+  separates again and stops there. Within the job a track is separated once: a second profile,
+  and the take's own turn after the stems made ahead, use what the job made, and the graph
+  shows those as done, not as kept.
 - **A run stopped for memory says so.** The system stops a run that needs more memory than it
   may use with a kill, and the run itself cannot say anything; the job then reads "The system
   stopped the run: it needed more memory than the 15G it may use", with the take it stopped at.
@@ -110,7 +119,8 @@ Removing a project from the list deletes nothing else.
   | `prepare` | before the first take, per take with close tracks | which take is being separated ahead |
   | `separation` | a track's stems are needed | `cached`, or `start`, `step` (model i of n), `done` |
   | `unit` | a take starts under a profile | its index in the plan |
-  | `stage` | inside a take | the stage's name and the fraction of the take done |
+  | `stage` | inside a take | the stage's name, the fraction of the take done, and `part`: how far through the stage itself (the mix bus says it after its multiband, saturation and glue steps) |
+  | `chain` | inside the stem chains, per stem (20 November) | the stem, its phase (`clean`, `chain`, `mix`, `done`, `kept` from an earlier run, `silent`) and how far through its chain |
   | `unit_done` | a take ends | seconds, loudness figures and files, or the error |
   | `end` | the run ends | what failed |
 
@@ -121,6 +131,31 @@ Removing a project from the list deletes nothing else.
 - The app shows the job's bar, each take's state and stage, the time so far, the run's last
   lines, and once a take has finished an estimate of what is left: the finished takes'
   seconds of work per second of audio, times the audio still to do.
+- **The take being made, on its graph** (20 November). Under the job's bar, "The pipeline of
+  &lt;take&gt; &lt;profile&gt;" opens the take's pipeline graph (the one of the take's page,
+  section 5) with every box in its state: waiting (pale), at work (orange, filled from the
+  left as far as it is, the percentage under the pointer), done, kept from an earlier run
+  (dashed), skipped (a stem with nothing in it), stopped (where a run that failed or was
+  cancelled was). The line above the graph names what is at work: "studio chain bass 47 %,
+  kick 24 %". On the take's own page the same marks go on its graph while that take runs.
+  - A take that has never been made has no files to draw a graph from, so the graph is drawn
+    from what the run will make ([gui/live.py](../mooz/gui/live.py), `plan`): the take's
+    tracks, the stems its separation plans give (or gave, where the cache has them), the
+    merged stems, the kit, the mix and the master. `stagemap._graph` lays it out, given names
+    in place of files, so a box is where it will be on the take's page. A job that only
+    separates gets the graph up to the merged stems.
+  - `live.states` turns the job's events into the boxes' states. A separation is shown by its
+    models (3 of 8, with the model's name). A stem's chain says how far it is processor by
+    processor: `pipeline._chain` names the phase and the part of the chain it covers (the
+    clean-up the first 30 %, the studio chain up to 90 %, then the stem's place in the mix),
+    and `effects.cleanup_track` and `studio_track` call `progress.tick()` after each of their
+    processors (4 and 18); a tick is sent only after a processor that took a quarter of a
+    second or more, so a chain with most processors off sends few. The kit's stems have a box
+    for the clean-up and one for the chain, each filled over its own part. With the stem
+    chains on several processes (three for a 5-minute take), several boxes are at work at
+    once, as the processes' events come.
+  - The states come with the job's state each second (`/api/state`, a few hundred bytes); the
+    graph itself is fetched once per take and profile (`/api/live`).
 - Cancel stops the process group: the pipeline, a separation in flight, `ffmpeg`. The
   command line removes its work folder on the way out; a separation cut short is done again
   next time (its cache is only marked complete at the end). Stopping the app (Ctrl-C or a
@@ -238,6 +273,7 @@ browser  ──HTTP, JSON──>  gui/server.py   routes, files with Range (audi
                               │
                  gui/projects.py           the list of projects; takes, results, settings, profiles
                  gui/stagemap.py           a take's files along the pipeline (the take's page)
+                 gui/live.py               the take being made on that graph, box by box
                  gui/listening.py          the blind comparisons' verdicts (listening.json)
                  gui/jobs.py               one job: starts the command line, reads its events
                               │
@@ -263,7 +299,8 @@ Changes outside the app's own folder, all small:
 |---|---|
 | `cli.py` | `--preset` can be given several times, `default` names the chain with no preset; progress events around the takes; SIGTERM leaves through the normal clean-up |
 | `config.py` | a preset is looked for next to the settings file (`presets/<name>.toml`) before the built-in ones |
-| `pipeline.py`, `separate.py` | `progress.stage(...)` calls at the stage boundaries |
+| `pipeline.py`, `separate.py` | `progress.stage(...)` calls at the stage boundaries; `progress.chain(...)` around each stem's chain (20 November) |
+| `effects.py` (20 November) | `progress.tick()` after each processor of the clean-up and of the studio chain: no effect on the sound, nothing sent unless a front end listens |
 | `chaincache.py` (11 November) | not for the app alone, but it is what makes a tweak from the app quick: each stem's chain is kept from run to run, and the job's line says "bass, kept" when one is used as it is |
 
 ## Checks
@@ -276,6 +313,11 @@ Changes outside the app's own folder, all small:
 - Also there: a profile edited through the form, a built-in one saved as the project's
   version and given back; a take's stage folder, stem caches and master laid out as the
   take's page gets them, each file served through the stage folder's links.
+- For the take being made on its graph: a stand-in run stopped in its separation, in its stem
+  chains and in its mix bus, the boxes' states read at each (a separation at model 3 of 8, a
+  clean-up box and a chain box each half full, a kept chain, a stem with nothing in it); a
+  job that only separates gets the graph up to the merged stems. `tests/test_speed.py` has
+  the ticks: what is said, when, and that the code has one per processor.
 - `tests/test_pipeline.py`: with progress on, the end-to-end run's stage fractions only rise
   and end at 1.
 - The page itself, driven in headless Chrome on a throw-away folder (not part of the test
@@ -303,6 +345,12 @@ Changes outside the app's own folder, all small:
     mix, Mix, Master, and the page filled in when it ended.
   - `albini` changed through the form and the text, saved as the project's version, a typo
     refused, given back to the built-in; a profile made from the form alone and deleted.
+- The take being made on its graph (20 November): Biancaneve (4:58) started through the app
+  on a throw-away project, stems from the cache, the page photographed while it ran. Done in
+  99 s. The bass's chain went 8, 30, 47, 53, 57, 67, 70, 73, 83, 90 % while the vocals', the guitar's and
+  then the kit's stems went through next to it three at a time; the kick's and the snare's
+  clean-up boxes filled before their chain boxes; then the drum bus, the mix (15, 35, 75 %)
+  and the master. Before the ticks a chain's box stood at 0, 30 and 90 %.
 - The graph and the guide, driven in headless Chrome on the band's project (read only):
   46 boxes and 55 arrows for Miramare; the bass's chain chosen lights 11 arrows and 12
   boxes; with the arrow keys from there to the merged bass, the room's stem, the guitar's,

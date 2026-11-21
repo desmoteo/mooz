@@ -9,15 +9,17 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import sys
+import time
 from pathlib import Path
 
 import numpy as np
 import soundfile as sf
 from scipy import signal
 
-from . import bed, chaincache, character, cleanup, config, dynamics, effects, eq, export, loudness, multitrack, profile, progress, separate, space, stages, stereo, takes, trim
+from . import augment, bed, chaincache, character, cleanup, config, dynamics, effects, eq, export, expr, loudness, multitrack, profile, progress, separate, space, stages, stereo, takes, trim
 
 
 def _finalize(x: np.ndarray, fs: int, cfg: dict) -> tuple[np.ndarray, np.ndarray, dict]:
@@ -71,7 +73,7 @@ def _ride(out: np.ndarray, v: np.ndarray, fs: int, cfg: dict) -> tuple[np.ndarra
     from scipy.ndimage import uniform_filter1d
 
     g = uniform_filter1d(uniform_filter1d(g, k), k)  # a slow hand on the fader
-    out = out + (10 ** (g / 20) - 1)[:, None] * v
+    out = out + expr.times(v, expr.linear(g) - 1)
     return out, {"avg_up_db": round(float(g[g > 0].mean()) if (g > 0).any() else 0.0, 1),
                  "max_up_db": round(float(g.max()), 1), "max_down_db": round(float(-g.min()), 1),
                  "riding_up_pct": round(100 * float(np.mean(g > 1.0)), 0)}
@@ -108,6 +110,13 @@ def _consistency(y: np.ndarray, fs: int, cfg: dict, out_dir: Path, song: str) ->
     return y, {"songs": len(tones), "eq_db": eq.at_freqs(grid, curve)}
 
 
+def _float(cfg: dict) -> str:
+    """The precision the audio is held in ([audio] float), as numpy and soundfile name it."""
+    if cfg["audio"]["float"] not in (32, 64):
+        raise ValueError(f"audio.float must be 32 or 64, not {cfg['audio']['float']}")
+    return f"float{cfg['audio']['float']}"
+
+
 def _drum_bus(files: dict[str, Path], lufs: dict[str, float], fs: int, cfg: dict) -> tuple[np.ndarray | None, dict]:
     """Stage 4: the kit as one instrument. Its pieces are balanced against each other
     (kit targets), then the bus gets its EQ, glue compression, parallel ("New York")
@@ -116,7 +125,7 @@ def _drum_bus(files: dict[str, Path], lufs: dict[str, float], fs: int, cfg: dict
     members = [n for n in dcfg["stems"] if n in files]
     if not dcfg["enabled"] or not members:
         return None, {}
-    read = lambda n: sf.read(files[n], dtype="float64", always_2d=True)[0]  # noqa: E731
+    read = lambda n: sf.read(files[n], dtype=_float(cfg), always_2d=True)[0]  # noqa: E731
     bus = sum(read(n) for n in members)
     stats: dict = {"stems": members, "unbalanced_lufs": round(loudness.integrated(bus, fs), 1)}
     bcfg = dcfg["balance"]
@@ -180,7 +189,7 @@ def _balance(out: np.ndarray, original: np.ndarray, g_orig: float, processed_fil
         r = raw_of(name)
         r *= g_orig
         in_orig[name] = loudness.integrated(r, fs)
-        r += sf.read(f, dtype="float64", always_2d=True)[0]
+        r += sf.read(f, dtype=out.dtype.name, always_2d=True)[0]
         in_blend[name] = loudness.integrated(r, fs)
         del r
     change, report = cleanup.balance_gains(in_blend, total, bcfg)
@@ -201,7 +210,7 @@ def _balance(out: np.ndarray, original: np.ndarray, g_orig: float, processed_fil
         report[gname]["original_share_db"] = round(20 * np.log10(r), 1) if r > 0 else None
     for name, g in gains.items():
         if g != 0.0:
-            out += (-1.0 if g is None else 10 ** (g / 20) - 1.0) * sf.read(processed_files[name], dtype="float64", always_2d=True)[0]
+            out += (-1.0 if g is None else 10 ** (g / 20) - 1.0) * sf.read(processed_files[name], dtype=out.dtype.name, always_2d=True)[0]
     total = loudness.integrated(out + original, fs)
     for gname, members in groups.items():
         if gname not in report or not members:
@@ -211,12 +220,195 @@ def _balance(out: np.ndarray, original: np.ndarray, g_orig: float, processed_fil
             a = raw_of(m)
             a *= g_orig
             if gains[m] is not None:
-                a += sf.read(processed_files[m], dtype="float64", always_2d=True)[0] * 10 ** (gains[m] / 20)
+                a += sf.read(processed_files[m], dtype=out.dtype.name, always_2d=True)[0] * 10 ** (gains[m] / 20)
             acc = a if acc is None else acc + a
             del a
         report[gname]["after_lu"] = round(loudness.integrated(acc, fs) - total, 1)
         del acc
     return gains, report
+
+
+@chaincache.uses
+def _chain(name: str, stems: dict[str, Path], read, fs: int, cfg: dict, hit_triggers, w_buzz, prof, target,
+           tempo_bpm: float | None, work: Path, stage: stages.StageWriter, kept_dir: Path | None = None):
+    """One stem's chain, from its separated file to its processed one: (3) the drum clean-up, (2) the
+    studio chain, then its place in the mix and its sends. Returns (stats, the tracks report's detail,
+    the kit gate's gain reduction, what the bed clean-up took, the processed file, the stage files it
+    wrote), or None for a stem with nothing in it. read: a stem's file as samples; hit_triggers: the
+    hit triggers, made when the first chain asks. It reads nothing else of the run, so it can be made in
+    a process of its own (_chain_job) and taken as an earlier run left it (chaincache.py). kept_dir:
+    the take's kept chains, where what a chain works out from its stem alone is kept too (the bass's pitch)."""
+    tcfg = cfg["tracks"].get(name, cfg["track_defaults"])
+    zcfg, bcfg = cfg["buzz"], cfg["bed"]
+    augment.PITCH_DIR = kept_dir / "_pitch" if kept_dir is not None else None
+    progress.chain(name, "clean", 0.0, 0.3, effects.CLEANUP_TICKS)  # (the clean-up is up to a third of a chain's time)
+    raw = read(stems[name])
+    if not np.isfinite(loudness.integrated(raw, fs)):
+        # nothing in it (below the loudness gate everywhere), e.g. no "other" instrument in this
+        # song: no chain, left out of the tracks report (it is in the original's share)
+        progress.chain(name, "silent", 1.0)
+        return None
+    triggers = hit_triggers()
+    st: dict = {}
+    detail = effects.begin_detail(raw, fs)
+    staged = len(stage.written)
+    stem = raw
+    taken = None  # what the bed clean-up took from this stem
+    if w_buzz is not None and name in zcfg["stems"]:  # stage 3, step 2: remove the buzz
+        protect = None
+        if name in ("snare", "toms"):  # never on the stem's own hits
+            protect = cleanup.own_hits(stem, fs, name, zcfg["protect_ms"])
+        # deeper between the stem's own hits, where it holds nothing but buzz and bleed
+        near = cleanup.own_hits(stem, fs, name, zcfg["own_hit_ms"][name])
+        zc = zcfg | {"floor_db": zcfg["stem_floor_db"][name], "between_floor_db": zcfg["stem_between_floor_db"][name]}
+        stem, st["buzz"] = cleanup.remove_buzz(stem, fs, w_buzz, zc, protect, near)
+    if bcfg["enabled"] and name in bcfg["stems"]:  # stage 3: the bed between the hat's hits (bed.py)
+        bed_key = read(stems[bcfg["key"]]) if bcfg["key"] in stems else None
+        before = stem
+        stem, st["bed"] = bed.remove_bed(stem, fs, bcfg, bed_key, name)
+        del bed_key
+        if bcfg["original_follows"] and "removed_db" in st["bed"]:
+            taken = (before - stem).astype(np.float32)
+        del before
+    if prof:
+        st["profile"] = profile.summary(prof)
+    stem = effects.cleanup_track(stem, fs, tcfg, triggers, st, detail, prof)
+    g = st.pop("_kit_gate_gr", None)  # its kit gate's gain reduction
+    if name in set(cfg["drum_bus"]["stems"]) | {"drums"} and stage:
+        stage.write(f"3_drum_cleanup/{name}", stem, fs)
+        stage.write(f"3_drum_cleanup/{name}_removed", raw - stem, fs)
+    del raw
+    progress.chain(name, "chain", 0.3, 0.9, effects.STUDIO_TICKS)
+    others = {k: v for k, v in triggers.items() if k != name}
+    stem = effects.studio_track(stem, fs, tcfg, st, detail, prof, target, others)  # stage 2
+    progress.chain(name, "mix", 0.9)
+    stage.write(f"2_stems/{name}", stem, fs)
+    st.pop("_pitch", None)  # the bass's pitch track, shared by its clean-up and fundamental
+    for i, smp in enumerate(st.pop("_samples", [])):  # the drum samples made from this song
+        stage.write(f"2_stems/samples/{name}_{i + 1}", smp / (np.abs(smp).max() + 1e-9) * 0.25, fs)
+    stem = effects.mix_track(stem, fs, tcfg, triggers, st, detail)
+    if tcfg["sends"]:  # its space (plate, slapback, tape echo), set relative to the dry track
+        wet, st["sends"] = space.sends(stem, fs, tcfg["sends"], tempo_bpm)
+        if wet is not None:
+            stem = stem + wet
+            del wet
+    effects.end_detail(detail, stem, fs)
+    st["lufs_in"] = round(detail["lufs_in"], 1)
+    st["lufs_out"] = round(detail["lufs_out"], 1) if np.isfinite(detail["lufs_out"]) else None
+    proc = work / f"_proc_{name}.wav"
+    sf.write(proc, stem.astype(np.float32), fs, subtype="FLOAT")
+    progress.chain(name, "done", 1.0)
+    return st, detail, g, taken, proc, stage.written[staged:]
+
+
+# --- stem chains in processes of their own ----------------------------------------------------
+# A chain reads its stem's file, the hit triggers and its settings, and nothing of the other chains:
+# several can be made at once. A worker makes one and keeps it as chaincache.py keeps chains (in the
+# take's own kept chains, or in the run's work folder where none are kept), and the run takes it up
+# as it takes up a kept one: the master is the same file as with one chain after the other.
+
+WORKERS_MOST = 3       # a fourth made a take no faster: the cores slow each other down (docs/SPEED.md)
+WORKERS_FROM_S = 60.0  # a shorter take is made faster than the workers start
+_chain_pool = None     # (how many, the pool): kept from take to take
+
+
+def _spare_memory_gb() -> float | None:
+    """What the run may still take: the machine's available memory, or what is left under the
+    limit of the scope it runs in (cli.py), whichever is less. None where that cannot be told."""
+    try:
+        with open("/proc/meminfo") as f:
+            spare = next(int(line.split()[1]) for line in f if line.startswith("MemAvailable:")) * 1024
+        group = Path("/sys/fs/cgroup") / Path("/proc/self/cgroup").read_text().strip().split("::")[-1].lstrip("/")
+        limit = (group / "memory.max").read_text().strip()
+        if limit != "max":
+            spare = min(spare, int(limit) - int((group / "memory.current").read_text()))
+        return spare / 2 ** 30
+    except (OSError, ValueError, StopIteration):
+        return None
+
+
+def _chain_workers(cfg: dict, chains_to_make: int, seconds: float) -> int:
+    """How many chains to make at once. [chains] workers or MOOZ_WORKERS says it; 0: as many as
+    the memory to spare allows, WORKERS_MOST at most, one for a short take. Measured on a take of
+    5 minutes: a worker 2.3 GB and the run itself 2.4 GB at its own highest point with the audio in
+    32 bits, 2.6 and 2.75 GB in 64; so 0.6 GB and 0.35 (0.4) per minute for a worker, 1.5 GB and
+    0.18 (0.25) per minute for the run."""
+    asked = int(os.environ.get("MOOZ_WORKERS") or cfg["chains"]["workers"])
+    if asked <= 0:
+        spare = _spare_memory_gb()
+        if seconds < WORKERS_FROM_S or spare is None:
+            return 1
+        minutes = seconds / 60
+        worker, run = (0.35, 0.18) if cfg["audio"]["float"] == 32 else (0.4, 0.25)
+        asked = min(WORKERS_MOST, (os.cpu_count() or 2) // 2, int((spare - 1.5 - run * minutes) / (0.6 + worker * minutes)))
+    return max(1, min(asked, chains_to_make))
+
+
+def _worker_start(threads: int) -> None:
+    """A worker process: Ctrl-C is the run's to answer, the worker goes when the run goes, and it
+    has its share of the threads."""
+    import signal as signals
+
+    signals.signal(signals.SIGINT, signals.SIG_IGN)
+    if sys.platform.startswith("linux"):
+        try:
+            import ctypes
+
+            ctypes.CDLL("libc.so.6").prctl(1, signals.SIGTERM)  # PR_SET_PDEATHSIG
+        except OSError:
+            pass
+    loudness.THREADS = threads
+    expr.threads(threads)
+
+
+def _workers(n: int):
+    global _chain_pool
+    if _chain_pool is not None and _chain_pool[0] != n:
+        _stop_workers()
+    if _chain_pool is None:
+        import multiprocessing
+        from concurrent.futures import ProcessPoolExecutor
+
+        # started afresh (spawn), not copied from this process: it has threads of its own running
+        _chain_pool = (n, ProcessPoolExecutor(n, mp_context=multiprocessing.get_context("spawn"),
+                                              initializer=_worker_start, initargs=(max(1, loudness.THREADS // n),)))
+    return _chain_pool[1]
+
+
+def _stop_workers() -> None:
+    """The workers, stopped where they are: the run is stopped, or a chain failed."""
+    global _chain_pool
+    if _chain_pool is not None:
+        pool, _chain_pool = _chain_pool[1], None
+        for process in list((getattr(pool, "_processes", None) or {}).values()):
+            process.terminate()
+        pool.shutdown(wait=False, cancel_futures=True)
+
+
+def _chain_job(a: dict) -> dict:
+    """In a worker: one stem's chain, made and kept for the run to take up."""
+    import resource
+
+    t0 = time.perf_counter()
+    span = a["span"]
+    read = lambda f: sf.read(f, dtype=_float(a["cfg"]), always_2d=True, **({"start": span[0], "stop": span[1]} if span else {}))[0]  # noqa: E731
+    triggers: dict = {}
+
+    def hit_triggers() -> dict:  # as the run made them, read from its work folder without a copy
+        if not triggers:
+            triggers.update({src: np.asarray(np.load(f, mmap_mode="r")) for src, f in a["triggers"].items()})
+        return triggers
+
+    stage = stages.StageWriter(a["stage_root"], a["stage_fmt"])
+    made = _chain(a["name"], a["stems"], read, a["fs"], a["cfg"], hit_triggers, a["w_buzz"], a["prof"], a["target"],
+                  a["tempo_bpm"], a["work"], stage, a["chains_root"])
+    if made is not None:
+        st, detail, g, taken, proc, staged = made
+        stage.flush()
+        chaincache.Chains(a["chains_root"], a["keep"]).store(a["name"], a["key"], a["made_of"], proc, a["fs"], st, detail,
+                                                             g, taken, {rel: stage.files[rel] for rel in staged})
+    return {"silent": made is None, "seconds": round(time.perf_counter() - t0, 1),
+            "peak_gb": round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 2 ** 20, 1)}
 
 
 @chaincache.uses
@@ -240,7 +432,9 @@ def _tracks(y: np.ndarray, fs: int, cfg: dict, stems: dict[str, Path] | None, st
         details["mix"] = {}
         out, st = effects.process_track(y, fs, cfg["tracks"]["mix"], details["mix"])
         return out, {"mix": st}
-    read = lambda f: sf.read(f, dtype="float64", always_2d=True, start=start, stop=end)[0]  # noqa: E731
+    read = lambda f: sf.read(f, dtype=_float(cfg), always_2d=True, start=start, stop=end)[0]  # noqa: E731
+    # what measures and decides reads the stems in 64 bits whatever the audio is held in: the hit triggers, the buzz frames
+    read64 = lambda f: sf.read(f, dtype="float64", always_2d=True, start=start, stop=end)[0]  # noqa: E731
     scfg = cfg["stems"]
     rcfg = scfg["refine"]
     if rcfg["enabled"]:  # bleed reduction: stems re-estimated as sharpened masks on the mix
@@ -251,7 +445,8 @@ def _tracks(y: np.ndarray, fs: int, cfg: dict, stems: dict[str, Path] | None, st
             stems[n] = work / f"_refined_{n}.wav"
             sf.write(stems[n], a, fs, subtype="FLOAT")
         del refined
-        read = lambda f: sf.read(f, dtype="float64", always_2d=True)[0]  # noqa: E731  (already trimmed)
+        read = lambda f: sf.read(f, dtype=_float(cfg), always_2d=True)[0]  # noqa: E731  (already trimmed)
+        read64 = lambda f: sf.read(f, dtype="float64", always_2d=True)[0]  # noqa: E731
         room_stems = None
     room_of = lambda n: (room_stems or {}).get(n, stems[n])  # noqa: E731
     original = y.copy()  # the recording as prepared: blended under the processed stems in stage 5
@@ -264,10 +459,10 @@ def _tracks(y: np.ndarray, fs: int, cfg: dict, stems: dict[str, Path] | None, st
 
     def hit_triggers() -> dict:  # made when the first stem needs them: not at all if every chain is kept
         if not made:
-            t = {src: effects.hit_trigger(read(stems[n]), fs, *effects.TRIGGER_BANDS[src])
+            t = {src: _hit_trigger(stems[n], src, lambda n=n: read64(stems[n]), fs, keep=False)
                  for src, n in sources.items() if n in stems}
             if "vocals" in stems:  # the singer's words (1-4 kHz), for the unmasking ducks of the guitars
-                t["vocals"] = effects.hit_trigger(read(stems["vocals"]), fs, 1000.0, 4000.0)
+                t["vocals"] = effects.hit_trigger(read64(stems["vocals"]), fs, 1000.0, 4000.0)
             made.append(t)
         return made[0]
 
@@ -285,7 +480,7 @@ def _tracks(y: np.ndarray, fs: int, cfg: dict, stems: dict[str, Path] | None, st
         if idle_src:
             idle = effects._hold(np.max(idle_src, axis=0) > 0.08, fs, 0.3, 2.0) < 0.5
             np.save(library / f"{stems_dir.name}.npy",
-                    cleanup.buzz_frames({n: read(stems[n]) for n in ("hihat", "cymbals") if n in stems}, idle, fs, zcfg))
+                    cleanup.buzz_frames({n: read64(stems[n]) for n in ("hihat", "cymbals") if n in stems}, idle, fs, zcfg))
         w_buzz = cleanup.buzz_fingerprint(library, zcfg)
         stats["buzz"] = {"learnt_from_songs": len(list(library.glob("*.npy"))), "fingerprint": w_buzz is not None}
     drum_names = set(cfg["drum_bus"]["stems"]) | {"drums"}
@@ -293,101 +488,99 @@ def _tracks(y: np.ndarray, fs: int, cfg: dict, stems: dict[str, Path] | None, st
     bcfg = cfg["bed"]
     bed_taken = None  # what the bed clean-up took from the stems: taken from the original too (stage 5)
     order = sorted(stems, key=lambda n: n not in sources.values())
-    for k, name in enumerate(order):
+    plan: dict[str, tuple] = {}  # per stem: its profile and target, and the name its chain is kept under
+    for name in order:
         tcfg = cfg["tracks"].get(name, cfg["track_defaults"])
         prof, target = profiles.get(name), targets.get(name)
         ref = profile.reference_tone(name, eq.log_grid(fs))
         if ref is not None:
             target = (target or {}) | {"reference": ref}
-        buzz_here = w_buzz is not None and name in zcfg["stems"]
-        bed_here = bcfg["enabled"] and name in bcfg["stems"]
-        key = made_of = kept = None
+        key = made_of = None
         if chains is not None:  # everything this stem's chain reads: the same as before, and it is not run again
             key, made_of = chains.key({
-                "stem": name, "file": idents[name], "span": [start, end], "fs": fs,
+                "stem": name, "file": idents[name], "span": [start, end], "fs": fs, "float": cfg["audio"]["float"],
                 "triggers": {src: idents[n] for src, n in trigger_stems.items()},
                 "chain": tcfg, "profile": prof, "target": target,
                 "tempo_bpm": tempo_bpm if tcfg["sends"] else None,
-                "buzz": [zcfg, w_buzz] if buzz_here else None,
-                "bed": [bcfg, idents.get(bcfg["key"])] if bed_here else None,
+                "buzz": [zcfg, w_buzz] if w_buzz is not None and name in zcfg["stems"] else None,
+                "bed": [bcfg, idents.get(bcfg["key"])] if bcfg["enabled"] and name in bcfg["stems"] else None,
                 "libraries": [chaincache.library(tcfg["augment"]["library"]["dir"]),
                               chaincache.library(tcfg["cymbal_augment"]["dir"])],
                 "stages": [stage.fmt if stage else "off", name in drum_names]})
-            kept = chains.load(name, key, work)
-        progress.stage("stems", k / len(order), name + (", kept" if kept else ""))
-        y -= read(room_of(name))
-        taken = g = None  # what the bed clean-up took from this stem; its kit gate's gain reduction
-        if kept is not None:
-            st, detail, g, taken = kept.stats, kept.detail, kept.kit_gr, kept.taken
-            details[name] = detail
-            for rel, f in kept.stages.items():
-                stage.adopt(rel, f)
-            processed_files[name] = kept.proc
-        else:
-            raw = read(stems[name])
-            if not np.isfinite(loudness.integrated(raw, fs)):
-                # nothing in it (below the loudness gate everywhere), e.g. no "other" instrument in this
-                # song: no chain, left out of the tracks report (it is in the original's share)
-                stats[name] = {"silent": True}
-                continue
-            triggers = hit_triggers()
-            st = {}
-            detail = details[name] = effects.begin_detail(raw, fs)
-            staged = len(stage.written)
-            stem = raw
-            if buzz_here:  # stage 3, step 2: remove the buzz
-                protect = None
-                if name in ("snare", "toms"):  # never on the stem's own hits
-                    protect = cleanup.own_hits(stem, fs, name, zcfg["protect_ms"])
-                # deeper between the stem's own hits, where it holds nothing but buzz and bleed
-                near = cleanup.own_hits(stem, fs, name, zcfg["own_hit_ms"][name])
-                zc = zcfg | {"floor_db": zcfg["stem_floor_db"][name], "between_floor_db": zcfg["stem_between_floor_db"][name]}
-                stem, st["buzz"] = cleanup.remove_buzz(stem, fs, w_buzz, zc, protect, near)
-            if bed_here:  # stage 3: the bed between the hat's hits (bed.py)
-                bed_key = read(stems[bcfg["key"]]) if bcfg["key"] in stems else None
-                before = stem
-                stem, st["bed"] = bed.remove_bed(stem, fs, bcfg, bed_key, name)
-                del bed_key
-                if bcfg["original_follows"] and "removed_db" in st["bed"]:
-                    taken = (before - stem).astype(np.float32)
-                del before
-            if prof:
-                st["profile"] = profile.summary(prof)
-            stem = effects.cleanup_track(stem, fs, tcfg, triggers, st, detail, prof)
-            g = st.pop("_kit_gate_gr", None)
-            if name in drum_names and stage:
-                stage.write(f"3_drum_cleanup/{name}", stem, fs)
-                stage.write(f"3_drum_cleanup/{name}_removed", raw - stem, fs)
-            del raw
-            others = {k: v for k, v in triggers.items() if k != name}
-            stem = effects.studio_track(stem, fs, tcfg, st, detail, prof, target, others)  # stage 2
-            stage.write(f"2_stems/{name}", stem, fs)
-            st.pop("_pitch", None)  # the bass's pitch track, shared by its clean-up and fundamental
-            for i, smp in enumerate(st.pop("_samples", [])):  # the drum samples made from this song
-                stage.write(f"2_stems/samples/{name}_{i + 1}", smp / (np.abs(smp).max() + 1e-9) * 0.25, fs)
-            stem = effects.mix_track(stem, fs, tcfg, triggers, st, detail)
-            if tcfg["sends"]:  # its space (plate, slapback, tape echo), set relative to the dry track
-                wet, st["sends"] = space.sends(stem, fs, tcfg["sends"], tempo_bpm)
-                if wet is not None:
-                    stem = stem + wet
-                    del wet
-            effects.end_detail(detail, stem, fs)
-            st["lufs_in"] = round(detail["lufs_in"], 1)
-            st["lufs_out"] = round(detail["lufs_out"], 1) if np.isfinite(detail["lufs_out"]) else None
-            processed_files[name] = work / f"_proc_{name}.wav"
-            sf.write(processed_files[name], stem.astype(np.float32), fs, subtype="FLOAT")
-            del stem
-            if chains is not None:
-                chains.store(name, key, made_of, processed_files[name], fs, st, detail, g, taken,
-                             {rel: stage.files[rel] for rel in stage.written[staged:]})
-        if taken is not None:
-            bed_taken = taken if bed_taken is None else bed_taken + taken
-        if g is not None:
-            kit_gr = g if kit_gr is None else np.minimum(kit_gr, g)
-        del taken, g
-        stats[name] = st
-        stem_lufs[name] = detail["lufs_out"] if np.isfinite(detail["lufs_out"]) else None
+        plan[name] = (prof, target, key, made_of)
+    # The chains no earlier run left: several at once, in processes of their own, where the take is long
+    # enough and the memory allows. The longest first (the bass's takes three times the others').
+    to_make = [n for n in order if chains is None or not chains.has(n, plan[n][2])]
+    workers = _chain_workers(cfg, len(to_make), len(y) / fs)
+    jobs: dict = {}
+    made_by: dict = {}
+    kept_in = chains if chains is not None else chaincache.Chains(work / "_chains", 1)  # where the workers leave them
+    if workers > 1:
+        trigger_files = {}
+        for src, t in hit_triggers().items():
+            trigger_files[src] = work / f"_trigger_{src}.npy"
+            np.save(trigger_files[src], t)
+        made.clear()  # the workers read them from there; here they are made again only if a chain comes back
+        pool = _workers(workers)
+        for name in sorted(to_make, key=lambda n: (n != "bass", n not in ("guitar", "vocals"))):
+            prof, target, key, made_of = plan[name]
+            jobs[name] = pool.submit(_chain_job, {
+                "name": name, "stems": stems, "span": None if rcfg["enabled"] else (start, end), "fs": fs, "cfg": cfg,
+                "triggers": trigger_files, "w_buzz": w_buzz, "prof": prof, "target": target, "tempo_bpm": tempo_bpm,
+                "work": work, "stage_root": stage.root, "stage_fmt": stage.fmt, "chains_root": kept_in.root,
+                "keep": kept_in.keep, "key": key or name, "made_of": made_of or "{}"})
+    try:
+        for k, name in enumerate(order):
+            prof, target, key, made_of = plan[name]
+            kept = chains.load(name, key, work) if chains is not None and name not in jobs else None
+            progress.stage("stems", k / len(order), name + (", kept" if kept else ""))
+            if kept:
+                progress.chain(name, "kept", 1.0)
+            y -= read(room_of(name))
+            if name in jobs:  # made by a worker: taken up as a kept one
+                made_by[name] = jobs.pop(name).result()
+                if made_by[name]["silent"]:
+                    stats[name] = {"silent": True}
+                    continue
+                kept = kept_in.load(name, key or name, work)
+                if kept is not None and chains is not None:  # (not found again, e.g. a full disk: made here, below)
+                    chains.reused.remove(name)
+                    chains.made.append(name)
+            if kept is not None:
+                st, detail, g, taken = kept.stats, kept.detail, kept.kit_gr, kept.taken
+                details[name] = detail
+                for rel, f in kept.stages.items():
+                    stage.adopt(rel, f)
+                processed_files[name] = kept.proc
+            else:
+                made_here = _chain(name, stems, read, fs, cfg, hit_triggers, w_buzz, prof, target, tempo_bpm, work, stage,
+                                   kept_in.root)
+                if made_here is None:
+                    stats[name] = {"silent": True}
+                    continue
+                st, detail, g, taken, processed_files[name], staged = made_here
+                details[name] = detail
+                if chains is not None:
+                    stage.flush()  # the stage files it links are being written on another thread
+                    chains.store(name, key, made_of, processed_files[name], fs, st, detail, g, taken,
+                                 {rel: stage.files[rel] for rel in staged})
+            if taken is not None:
+                bed_taken = taken if bed_taken is None else bed_taken + taken
+            if g is not None:
+                kit_gr = g if kit_gr is None else np.minimum(kit_gr, g)
+            del taken, g
+            stats[name] = st
+            stem_lufs[name] = detail["lufs_out"] if np.isfinite(detail["lufs_out"]) else None
+    except BaseException:
+        if jobs:  # stopped, or a chain failed: the others are not waited for
+            _stop_workers()
+        raise
+    if made_by:
+        print(f"  chains    {len(made_by)} made on {workers} workers: "
+              + ", ".join(f"{n} {d['seconds']:.0f} s" for n, d in made_by.items())
+              + f" (a worker's memory at most {max(d['peak_gb'] for d in made_by.values()):.1f} GB)", file=sys.stderr)
     made.clear()
+    _triggers.clear()  # (those the character made and no chain asked for: every chain was kept)
     # Stage 4: the drum kit as one instrument
     progress.stage("drum_bus")
     bus, stats["drum_bus"] = _drum_bus(processed_files, stem_lufs, fs, cfg)
@@ -413,7 +606,7 @@ def _tracks(y: np.ndarray, fs: int, cfg: dict, stems: dict[str, Path] | None, st
     del y
     out = np.zeros_like(original)
     for f in processed_files.values():
-        out += sf.read(f, dtype="float64", always_2d=True)[0]
+        out += sf.read(f, dtype=out.dtype.name, always_2d=True)[0]
     unbalanced = loudness.integrated(out, fs)
     share = cfg["mix"]["original_share"]
     if not 0.0 <= share <= 0.5:
@@ -433,7 +626,7 @@ def _tracks(y: np.ndarray, fs: int, cfg: dict, stems: dict[str, Path] | None, st
         # the original follows the kit gate in the snare buzz's band: while the drummer is not playing,
         # the buzz the gate took from the hat and cymbal stems must not come back through the blend
         gr = kit_gr.astype(np.float64)
-        original -= (1 - 10 ** (-gr / 20))[:, None] * effects._band(original, fs, band[0], band[1])
+        original -= expr.times(effects._band(original, fs, band[0], band[1]), 1 - expr.linear(-gr))
         stats["blend"]["kit_gate"] = {"band_hz": list(band), "max_db": round(float(gr.max()), 1),
                                       "closed_pct": round(100 * float(np.mean(gr > gr.max() / 2)), 1)}
         del gr
@@ -460,7 +653,7 @@ def _tracks(y: np.ndarray, fs: int, cfg: dict, stems: dict[str, Path] | None, st
     ridden = None
     if rd["enabled"] and voc:
         g_of = lambda n: gains.get(n) or 0.0  # noqa: E731
-        v = sum(sf.read(processed_files[n], dtype="float64", always_2d=True)[0] * 10 ** (g_of(n) / 20) for n in voc)
+        v = sum(sf.read(processed_files[n], dtype=out.dtype.name, always_2d=True)[0] * 10 ** (g_of(n) / 20) for n in voc)
         before = out
         out, stats["rider"] = _ride(out, v, fs, rd)
         ridden = out - before
@@ -470,7 +663,7 @@ def _tracks(y: np.ndarray, fs: int, cfg: dict, stems: dict[str, Path] | None, st
         for name, f in processed_files.items():
             if gains.get(name, 0.0) is None:
                 continue
-            part = sf.read(f, dtype="float64", always_2d=True)[0] * 10 ** ((gains.get(name) or 0.0) / 20)
+            part = sf.read(f, dtype=out.dtype.name, always_2d=True)[0] * 10 ** ((gains.get(name) or 0.0) / 20)
             if ridden is not None and name == voc[0]:
                 part += ridden
             stage.write(f"5_premix/{name}", part, fs)
@@ -564,6 +757,20 @@ def _merged(take: takes.Take, room: dict[str, Path], start: int, fs: int, cfg: d
 
 
 CHARACTER_MELODIC, CHARACTER_HITS = ("vocals", "guitar", "guitar_left", "guitar_right"), ("kick", "snare", "toms")
+_triggers: dict = {}  # the take's hit triggers, by stem file and drum: the character and the chains ask for the same ones
+
+
+@chaincache.uses
+def _hit_trigger(stem: Path, src: str, read, fs: int, keep: bool = True) -> np.ndarray:
+    """The hit trigger of drum src in the stem file (effects.hit_trigger in src's band), made once a
+    take: stage 0 makes those of kick, snare and toms for the song's character, the stems' stage wants
+    them again. keep = False: the last one to ask takes it away. read: the stem's samples."""
+    made = _triggers.pop((str(stem), src), None) if not keep else _triggers.get((str(stem), src))
+    if made is None:
+        made = effects.hit_trigger(read(), fs, *effects.TRIGGER_BANDS[src])
+        if keep:
+            _triggers[(str(stem), src)] = made
+    return made
 
 
 @chaincache.uses
@@ -571,7 +778,7 @@ def _characterise(y: np.ndarray, fs: int, stems: dict[str, Path] | None, start: 
     """Stage 0: the song's character, from the recording as prepared and a few raw stems."""
     read = lambda n: sf.read(stems[n], dtype="float64", always_2d=True, start=start, stop=end)[0]  # noqa: E731
     raw = {n: read(n) for n in CHARACTER_MELODIC if stems and n in stems}
-    trig = {k: effects.hit_trigger(read(k), fs, *effects.TRIGGER_BANDS[k]) for k in CHARACTER_HITS if k in stems} if stems else None
+    trig = {k: _hit_trigger(stems[k], k, lambda k=k: read(k), fs) for k in CHARACTER_HITS if k in stems} if stems else None
     return character.characterise(y, fs, raw, trig)
 
 
@@ -589,6 +796,7 @@ def process_file(path: Path | takes.Take, cfg: dict, *, analyze_only: bool = Fal
     try:
         return _process(take, cfg, work, False, ab)
     finally:
+        _triggers.clear()
         shutil.rmtree(work, ignore_errors=True)
         try:
             work.parent.rmdir()  # .work itself, when no other run is using it
@@ -651,6 +859,7 @@ def _process(take: takes.Take, cfg: dict, work: Path | None, analyze_only: bool,
         rep["multitrack"]["room_track"] = take.room.name
         if take.mixdown is not None:
             rep["multitrack"]["recorder_mixdown"] = takes.mixdown_formula(take)
+    separate.release()  # the take's stems are there: the separating process and its models go before the chains want the memory
     profiles, targets = {}, {}
     if stems:
         # Stage 0, per stem: every raw stem profiled before any clean-up; the medians over
@@ -702,6 +911,7 @@ def _process(take: takes.Take, cfg: dict, work: Path | None, analyze_only: bool,
         if close_dirs:
             stage.link_raw(stems_dir, "1_merged")
     if not analyze_only:
+        y = y.astype(_float(cfg), copy=False)  # from here to the master the audio is in [audio] float
         y, rep["tracks"] = _tracks(y, fs, cfg, stems, start, end, work, stems_dir, details, stage, profiles, targets,
                                    rep.get("character", {}).get("tempo_bpm"), room_stems, chains)
         if chains is not None:  # which stem chains this run made, and which it found as an earlier run left them
@@ -734,24 +944,31 @@ def _process(take: takes.Take, cfg: dict, work: Path | None, analyze_only: bool,
     active = loudness.active_mask(y, fs)
     mcfg = cfg["multiband"]
     if mcfg["enabled"]:
+        progress.stage("bus", 0.15, "multiband")
         y, rep["multiband"], band_gr = dynamics.multiband(
             y, fs, mcfg["crossovers_hz"], mcfg["bands"], active,
             mcfg["balance_strength"] if stereo_in else 0.0, mcfg["balance_max_db"])
         curves["multiband"] = {k: dynamics.decimate(v, fs) for k, v in band_gr.items()}
     scfg_ = cfg["saturation"]
     if scfg_["enabled"]:
+        progress.stage("bus", 0.35, "saturation")
         y, rep["saturation"] = effects.saturator(y, fs, scfg_)
     gcfg = cfg["glue"]
     if gcfg["enabled"]:
+        progress.stage("bus", 0.75, "glue")
         params = {k: gcfg[k] for k in dynamics.BAND_PARAMS}
         if gcfg["target_gr_db"] > 0:  # the threshold that gives this much gain reduction while playing
             lo_, hi_ = 5.0, 99.5
+            level = dynamics.level_db(y, fs, params["rms_ms"])  # the same at every step, and for the compressor after
             for _ in range(7):
                 mid_ = 0.5 * (lo_ + hi_)
-                _, _, st_ = dynamics.compress(y, fs, **(params | {"threshold_pct": mid_}), active=active)
-                lo_, hi_ = (mid_, hi_) if st_["avg_gr_db"] > gcfg["target_gr_db"] else (lo_, mid_)
+                avg = dynamics.average_reduction(level, fs, **(params | {"threshold_pct": mid_}), active=active)
+                lo_, hi_ = (mid_, hi_) if avg > gcfg["target_gr_db"] else (lo_, mid_)
             params["threshold_pct"] = round(0.5 * (lo_ + hi_), 1)
-        y, gr, rep["glue"] = dynamics.compress(y, fs, **params, active=active)
+        else:
+            level = None
+        y, gr, rep["glue"] = dynamics.compress(y, fs, **params, active=active, level=level)
+        del level
         rep["glue"]["threshold_pct"] = params["threshold_pct"]
         curves["glue"] = dynamics.decimate(gr, fs)
 
@@ -777,13 +994,15 @@ def _process(take: takes.Take, cfg: dict, work: Path | None, analyze_only: bool,
     export.write_wav(wav, y, fs, ocfg["bit_depth"])
     rep["outputs"] = {"wav": str(wav)}
     if stage:
+        stage.flush()  # every stage file is on the disk from here on
         stage.readme(take.name, {"style": rep.get("character", {}).get("style"), "files": stage.written})
         rep["outputs"]["stages"] = str(stage.root)
     tags = {"title": title, "artist": ocfg["artist"], "album": ocfg["album"].format(date=date or "").strip(),
             "date": date[:4]}
+    encoding = []  # the MP3 encoders, each a process of its own: started here, waited for at the end
     if ocfg["mp3"]:
         mp3 = out_dir / f"{take.name}.mp3"
-        if export.write_mp3(wav, mp3, ocfg["mp3_bitrate"], tags):
+        if export.start_mp3(wav, mp3, ocfg["mp3_bitrate"], tags, encoding):
             rep["outputs"]["mp3"] = str(mp3)
         else:
             print("  note: ffmpeg not found, skipping MP3", file=sys.stderr)
@@ -798,8 +1017,8 @@ def _process(take: takes.Take, cfg: dict, work: Path | None, analyze_only: bool,
         mix_path = out_dir / f"{take.name}_mix.wav"
         export.write_wav(mix_path, mix, fs, ocfg["bit_depth"])
         rep["outputs"]["mix"] = str(mix_path)
-        if ocfg["mp3"] and export.write_mp3(mix_path, mix_path.with_suffix(".mp3"), ocfg["mp3_bitrate"],
-                                            tags | {"title": f"{title} (the mix, before the master)"}):
+        if ocfg["mp3"] and export.start_mp3(mix_path, mix_path.with_suffix(".mp3"), ocfg["mp3_bitrate"],
+                                            tags | {"title": f"{title} (the mix, before the master)"}, encoding):
             rep["outputs"]["mix_mp3"] = str(mix_path.with_suffix(".mp3"))
         del mix
     if ab:
@@ -821,7 +1040,7 @@ def _process(take: takes.Take, cfg: dict, work: Path | None, analyze_only: bool,
         if ocfg["mp3"]:
             ab_mp3 = ab_path.with_suffix(".mp3")
             ab_tags = tags | {"title": f"{title} (A/B: original first, switches every {ocfg['ab_segment_s']:g} s)"}
-            if export.write_mp3(ab_path, ab_mp3, ocfg["mp3_bitrate"], ab_tags):
+            if export.start_mp3(ab_path, ab_mp3, ocfg["mp3_bitrate"], ab_tags, encoding):
                 rep["outputs"]["ab_mp3"] = str(ab_mp3)
     if ocfg["report"]:
         progress.stage("report")
@@ -838,5 +1057,7 @@ def _process(take: takes.Take, cfg: dict, work: Path | None, analyze_only: bool,
             tracks_png = rdir / f"{take.name}_tracks.png"
             report.plot_tracks(tracks_png, rep, details, cfg)
             rep["outputs"]["tracks_report"] = str(tracks_png)
+    export.finish(encoding)  # the report names the MP3s: they are whole before it is written
+    if ocfg["report"]:
         (rdir / f"{take.name}.json").write_text(json.dumps(rep, indent=2, default=float))
     return rep

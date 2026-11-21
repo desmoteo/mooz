@@ -1,0 +1,31 @@
+file                                           whole  typical   worst  at      (dB re the file; windows of 0.4 s, re the file's level there)
+261105_235855 Biancaneve.wav                     -72      -72     -70    60.8 s
+261105_235855 Biancaneve_mix.wav                 -72      -72     -68     1.2 s
+s/261105_235855 Biancaneve/2_stems/bass.flac    -121     -121     -98     1.6 s
+61105_235855 Biancaneve/2_stems/cymbals.flac    -112     -100     -76   286.8 s
+261105_235855 Biancaneve/2_stems/guitar.flac    -116     -115     -78   288.0 s
+/261105_235855 Biancaneve/2_stems/hihat.flac    -110     -104     -73   250.8 s
+s/261105_235855 Biancaneve/2_stems/kick.flac    -121     -115     -71   264.8 s
+/261105_235855 Biancaneve/2_stems/snare.flac    -113     -104     -68   249.6 s
+s/261105_235855 Biancaneve/2_stems/toms.flac    -115     -100     -70    33.6 s
+261105_235855 Biancaneve/2_stems/vocals.flac    -118     -118     -65   150.8 s
+35855 Biancaneve/3_drum_cleanup/cymbals.flac    -121     -117     -84    54.0 s
+ancaneve/3_drum_cleanup/cymbals_removed.flac    -105      -98     -60   209.2 s
+_235855 Biancaneve/3_drum_cleanup/hihat.flac    -120     -115     -87    46.8 s
+Biancaneve/3_drum_cleanup/hihat_removed.flac    -110     -107     -73    45.2 s
+5_235855 Biancaneve/3_drum_cleanup/kick.flac    -127     -126     -90    30.0 s
+ Biancaneve/3_drum_cleanup/kick_removed.flac    same
+_235855 Biancaneve/3_drum_cleanup/snare.flac    -127     -125     -91    76.8 s
+Biancaneve/3_drum_cleanup/snare_removed.flac    -112     -109     -73   288.8 s
+5_235855 Biancaneve/3_drum_cleanup/toms.flac    -125     -122     -92    80.0 s
+ Biancaneve/3_drum_cleanup/toms_removed.flac    -109     -193     -73    56.0 s
+ges/261105_235855 Biancaneve/4_drum_bus.flac    -117     -115     -73    50.0 s
+stages/261105_235855 Biancaneve/5_mix.flac       -72      -72     -65     0.4 s
+/261105_235855 Biancaneve/5_premix/bass.flac    -119     -119     -97     1.6 s
+105_235855 Biancaneve/5_premix/drum_bus.flac    -118     -117     -75    50.0 s
+61105_235855 Biancaneve/5_premix/guitar.flac    -118     -117     -80   288.0 s
+105_235855 Biancaneve/5_premix/original.flac    -121     -120     -97     0.4 s
+61105_235855 Biancaneve/5_premix/vocals.flac    -119     -119     -67   150.8 s
+
+report fields that differ: 1
+   /tracks/rider/avg_up_db                                                                           0.7 -> 1.4

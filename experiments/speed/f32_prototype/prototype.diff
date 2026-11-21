@@ -1,0 +1,60 @@
+--- mooz/pipeline.py	2026-11-19 18:27:43.300956524 +0100
++++ /tmp/claude-1001/-media-secure-storage-Personal-Circhi/1d8dd9b8-8da2-47f5-adaf-4f968af2583f/scratchpad/speed/f32/mooz/pipeline.py	2026-11-19 19:08:46.093260092 +0100
+@@ -19,7 +19,7 @@
+ import soundfile as sf
+ from scipy import signal
+ 
+-from . import bed, chaincache, character, cleanup, config, dynamics, effects, eq, export, loudness, multitrack, profile, progress, separate, space, stages, stereo, takes, trim
++from . import _f32, bed, chaincache, character, cleanup, config, dynamics, effects, eq, export, loudness, multitrack, profile, progress, separate, space, stages, stereo, takes, trim
+ 
+ 
+ def _finalize(x: np.ndarray, fs: int, cfg: dict) -> tuple[np.ndarray, np.ndarray, dict]:
+@@ -232,6 +232,10 @@
+     a process of its own (_chain_job) and taken as an earlier run left it (chaincache.py)."""
+     tcfg = cfg["tracks"].get(name, cfg["track_defaults"])
+     zcfg, bcfg = cfg["buzz"], cfg["bed"]
++    if _f32.MODE:  # PROTOTYPE
++        _f32.active = True
++        read64 = read
++        read = lambda f: read64(f).astype(np.float32)  # noqa: E731
+     raw = read(stems[name])
+     if not np.isfinite(loudness.integrated(raw, fs)):
+         # nothing in it (below the loudness gate everywhere), e.g. no "other" instrument in this
+@@ -284,6 +288,7 @@
+     st["lufs_out"] = round(detail["lufs_out"], 1) if np.isfinite(detail["lufs_out"]) else None
+     proc = work / f"_proc_{name}.wav"
+     sf.write(proc, stem.astype(np.float32), fs, subtype="FLOAT")
++    _f32.active = _f32.MODE == "all"  # PROTOTYPE
+     return st, detail, g, taken, proc, stage.written[staged:]
+ 
+ 
+@@ -871,6 +876,8 @@
+         if close_dirs:
+             stage.link_raw(stems_dir, "1_merged")
+     if not analyze_only:
++        if _f32.MODE == "all":  # PROTOTYPE
++            y = y.astype(np.float32)
+         y, rep["tracks"] = _tracks(y, fs, cfg, stems, start, end, work, stems_dir, details, stage, profiles, targets,
+                                    rep.get("character", {}).get("tempo_bpm"), room_stems, chains)
+         if chains is not None:  # which stem chains this run made, and which it found as an earlier run left them
+@@ -1013,3 +1020,9 @@
+     if ocfg["report"]:
+         (rdir / f"{take.name}.json").write_text(json.dumps(rep, indent=2, default=float))
+     return rep
++
++
++# PROTOTYPE: float32 audio between the effects
++_f32.wrap(effects, dynamics, eq, cleanup, bed, space, stereo, trim)
++for _name in ("_ride", "_drum_bus", "_finalize", "_consistency"):
++    globals()[_name] = _f32.keep32(globals()[_name])
+--- mooz/eq.py	2026-10-01 10:34:10.823214001 +0200
++++ /tmp/claude-1001/-media-secure-storage-Personal-Circhi/1d8dd9b8-8da2-47f5-adaf-4f968af2583f/scratchpad/speed/f32/mooz/eq.py	2026-11-19 19:08:46.093428043 +0100
+@@ -116,7 +116,7 @@
+ 
+ def apply_fir(x: np.ndarray, h: np.ndarray) -> np.ndarray:
+     """Zero-latency linear-phase filtering (odd-length symmetric FIR)."""
+-    return signal.oaconvolve(x, h[:, None], mode="same", axes=0)
++    return signal.oaconvolve(x, h[:, None].astype(x.dtype), mode="same", axes=0)  # PROTOTYPE: float32 taps for float32 audio
+ 
+ 
+ def at_freqs(grid: np.ndarray, curve: np.ndarray, freqs=REPORT_FREQS) -> dict[str, float]:

@@ -29,11 +29,19 @@ the room track, the inputs are close tracks.</p>
     so a take can be compared across profiles.</li>
   <li>While a job runs, the bar on top shows the take and the stage it is at, the time so far and an estimate of
     what is left. Cancel stops it; takes already finished keep their masters.</li>
+  <li>Under the bar, "The pipeline of ..." opens the graph of the take being made. A box at work is orange and fills
+    from the left as far as it is; the line above the graph names what is at work and at what percentage. Done boxes
+    have a full outline, the ones kept from an earlier run a dashed one, and the pale ones are still waiting. Several
+    stems are worked on at the same time, so several boxes can be orange at once. The same marks are on the take's
+    own page, on its pipeline graph, while that take runs.</li>
   <li>Separate only does the slow part (splitting the takes into stems, on the graphics card) and keeps the stems for later.</li>
   <li>A/B files too writes, next to each master, a file with the recording and the master in turns at the same loudness.</li>
   <li>A take already mastered with the same settings, recordings and program is left as it is: its row says "up to
-    date". So a job that stopped half-way can simply be started again, and goes on where it stopped. Tick "Also what
-    is up to date" to make those again too.</li>
+    date". So a job that stopped half-way can simply be started again, and goes on where it stopped. Tick "Also
+    masters that are up to date" to make those again too.</li>
+  <li>A master made again still starts from the stems the take was separated into before (dashed on the job's graph):
+    they depend on the recording only, and separating is the slow part. Tick "Separate again too" to have the chosen
+    takes separated again as well, several minutes per track; the kept stems are replaced.</li>
   <li>If a job stops with "the system stopped the run: it needed more memory", a take was too long for the memory the
     run may use. The limit goes with the memory the machine has free when the job starts: close what you do not need
     and start it again.</li>

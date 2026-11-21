@@ -3,9 +3,9 @@
 Gain smoothing follows the "smooth decoupled" peak detector of Giannoulis,
 Massberg & Reiss, "Digital Dynamic Range Compressor Design" (JAES 2012),
 run on the gain reduction in dB. Its release stage y[n] = max(x[n], r*y[n-1])
-has the closed form y[n] = max_k r^(n-k) x[k], evaluated below with a cumulative
-maximum in the log domain, so whole songs are processed without a Python loop.
-Since the files are processed offline, detectors may look ahead in time.
+is one compiled loop over the samples (numba), so whole songs are processed
+without a Python loop. Since the files are processed offline, detectors may
+look ahead in time.
 """
 
 from __future__ import annotations
@@ -14,24 +14,33 @@ import numpy as np
 from scipy import signal
 from scipy.ndimage import maximum_filter1d, uniform_filter1d
 
-from . import stereo
-from .loudness import EPS, filtfilt, oversampled_chunks, true_peak_envelope
+from . import expr, stereo
+from .loudness import EPS, filtfilt, oversampled_chunks, power, true_peak_envelope
 
 
 def release_hold(v: np.ndarray, release_ms: float, fs: float, axis: int = -1) -> np.ndarray:
-    """Peak-hold a non-negative signal (along axis) with an exponential release."""
-    c = -1000.0 / (release_ms * fs)  # ln(r)
-    shape = [1] * v.ndim
-    shape[axis] = v.shape[axis]
-    ramp = (c * np.arange(v.shape[axis])).reshape(shape)
-    out = np.maximum.accumulate(np.log(np.maximum(v, 1e-6)) - ramp, axis=axis)
-    out += ramp
-    return np.exp(out)
+    """Peak-hold a non-negative signal (along axis) with an exponential release:
+    y[n] = max(x[n], r*y[n-1]), x floored at 1e-6. One compiled pass over the samples (it was
+    a cumulative maximum in the log domain, four times slower and the same to 1e-12 relative)."""
+    r = float(np.exp(-1000.0 / (release_ms * fs)))
+    rows = np.ascontiguousarray(np.moveaxis(np.asarray(v, dtype=np.float64), axis, -1))
+    out = np.empty_like(rows)
+    from . import compiled  # (numba: loaded at the first call)
+
+    compiled.hold(rows.reshape(-1, rows.shape[-1]), r, out.reshape(-1, rows.shape[-1]))
+    return np.moveaxis(out, -1, axis)
 
 
 def attack_smooth(v: np.ndarray, attack_ms: float, fs: float, axis: int = -1) -> np.ndarray:
-    a = np.exp(-1000.0 / (attack_ms * fs))
-    return signal.lfilter([1 - a], [1, -a], v, axis=axis)
+    """One-pole smoothing (along axis) with the time constant attack_ms: one compiled pass (it was
+    scipy's lfilter, three times slower and the same to the last bit)."""
+    a = float(np.exp(-1000.0 / (attack_ms * fs)))
+    rows = np.ascontiguousarray(np.moveaxis(np.asarray(v, dtype=np.float64), axis, -1))
+    out = np.empty_like(rows)
+    from . import compiled  # (numba: loaded at the first call)
+
+    compiled.smooth(rows.reshape(-1, rows.shape[-1]), a, out.reshape(-1, rows.shape[-1]))
+    return np.moveaxis(out, -1, axis)
 
 
 def envelope(a: np.ndarray, fs: float, attack_ms: float, release_ms: float) -> np.ndarray:
@@ -44,18 +53,35 @@ def gain_reduction(level_db: np.ndarray, threshold_db: float, ratio: float, knee
     over = level_db - threshold_db
     slope = 1.0 - 1.0 / ratio
     knee = max(knee_db, 1e-6)
-    gr = np.where(over > knee / 2, slope * over, slope * (over + knee / 2) ** 2 / (2 * knee))
+    gr = expr.knee(over, slope, knee)
     gr[over < -knee / 2] = 0.0
     return gr
 
 
 def level_db(x: np.ndarray, fs: float, rms_ms: float) -> np.ndarray:
     """Stereo-linked RMS level over a centred window of rms_ms."""
-    p = np.mean(x * x, axis=1)
+    p = power(x)
     n = int(round(rms_ms * 1e-3 * fs))
     if n > 1:
         p = np.maximum(uniform_filter1d(p, n), 0.0)  # running mean can dip a hair below zero
-    return 10 * np.log10(p + EPS)
+    return expr.power_db(p, EPS)
+
+
+def _reduction(lev: np.ndarray, use, fs: float, threshold_pct: float, ratio: float, knee_db: float,
+               attack_ms: float, release_ms: float) -> tuple[np.ndarray, float]:
+    """The smoothed gain reduction (dB) of a compressor for the level lev, and its threshold."""
+    threshold = float(np.percentile(lev[use][::16], threshold_pct))
+    gr = gain_reduction(lev, threshold, ratio, knee_db)
+    return attack_smooth(release_hold(gr, release_ms, fs), attack_ms, fs), threshold
+
+
+def average_reduction(lev: np.ndarray, fs: float, *, threshold_pct: float, ratio: float, knee_db: float, attack_ms: float,
+                      release_ms: float, active: np.ndarray | None = None, **_) -> float:
+    """compress()'s avg_gr_db for a signal of level lev, without the signal: all a search for the
+    threshold needs. The level is the same at every step of such a search, and no gain is applied."""
+    use = active if active is not None and active.any() else slice(None)
+    gr, _ = _reduction(lev, use, fs, threshold_pct, ratio, knee_db, attack_ms, release_ms)
+    return round(float(gr[use].mean()), 2)
 
 
 def compress(
@@ -70,20 +96,20 @@ def compress(
     rms_ms: float,
     active: np.ndarray | None = None,
     auto_makeup: bool = False,
+    level: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray, dict]:
     """Compress x. The threshold sits at the threshold_pct percentile of the
     signal's own level (over active samples), so a setting compresses the same
-    share of the song regardless of how hot it was recorded.
+    share of the song regardless of how hot it was recorded. level: x's level
+    (level_db with this rms_ms), where the caller has it already.
 
     auto_makeup restores the original energy, i.e. evens out dynamics without
     changing the long-term level (used per band so the EQ'd balance is kept).
     """
-    lev = level_db(x, fs, rms_ms)
+    lev = level_db(x, fs, rms_ms) if level is None else level
     use = active if active is not None and active.any() else slice(None)
-    threshold = float(np.percentile(lev[use][::16], threshold_pct))
-    gr = gain_reduction(lev, threshold, ratio, knee_db)
-    gr = attack_smooth(release_hold(gr, release_ms, fs), attack_ms, fs)
-    y = x * (10 ** (-gr / 20))[:, None]
+    gr, threshold = _reduction(lev, use, fs, threshold_pct, ratio, knee_db, attack_ms, release_ms)
+    y = expr.gained(x, -gr)
     makeup = 0.0
     if auto_makeup:
         makeup = float(10 * np.log10((np.sum(x * x) + EPS) / (np.sum(y * y) + EPS)))
@@ -187,13 +213,13 @@ def limit(
     ramped in with a moving average of the same length, so the gain is fully
     down by the time each peak arrives; then it is released exponentially.
     """
-    need = np.maximum(0.0, 20 * np.log10(true_peak_envelope(x, factor) + EPS) - ceiling_db)
+    need = np.maximum(0.0, expr.db(true_peak_envelope(x, factor), EPS) - ceiling_db)
     la = max(2, int(round(lookahead_ms * 1e-3 * fs)) // 2 * 2)  # even: exact forward window
     held = maximum_filter1d(need, size=la + 1, origin=-(la // 2), mode="constant", cval=0.0)
     c = np.concatenate([np.zeros(la + 1), np.cumsum(held)])
     ramped = (c[la + 1 :] - c[: len(held)]) / (la + 1)
     gr = release_hold(ramped, release_ms, fs)
-    y = x * (10 ** (-gr / 20))[:, None]
+    y = expr.gained(x, -gr)
     return y, gr, {
         "max_gr_db": round(float(gr.max()), 2),
         "limited_pct": round(100 * float(np.mean(gr > 0.1)), 2),

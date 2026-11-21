@@ -116,7 +116,7 @@ def fir_response_db(h: np.ndarray, grid: np.ndarray, fs: float) -> np.ndarray:
 
 def apply_fir(x: np.ndarray, h: np.ndarray) -> np.ndarray:
     """Zero-latency linear-phase filtering (odd-length symmetric FIR)."""
-    return signal.oaconvolve(x, h[:, None], mode="same", axes=0)
+    return signal.oaconvolve(x, h[:, None].astype(x.dtype, copy=False), mode="same", axes=0)
 
 
 def at_freqs(grid: np.ndarray, curve: np.ndarray, freqs=REPORT_FREQS) -> dict[str, float]:

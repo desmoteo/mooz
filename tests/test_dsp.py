@@ -337,6 +337,7 @@ def test_stage_writer_keeps_relative_levels_without_clipping(tmp_path):
     quiet = np.full((FS, 2), 0.5)
     w.write("2_stems/a", loud, FS)
     w.write("2_stems/b", quiet, FS)
+    w.flush()  # the files are encoded on a thread of their own: whoever reads them waits for it
     a = sf.read(tmp_path / "2_stems/a.flac")[0]
     b = sf.read(tmp_path / "2_stems/b.flac")[0]
     assert np.abs(a).max() < 1.0
